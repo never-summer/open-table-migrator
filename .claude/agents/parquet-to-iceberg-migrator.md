@@ -17,6 +17,8 @@ You have access to the `parquet-to-iceberg` skill (see `skills/parquet_to_iceber
 - A dependency updater (`update_dependencies`) for requirements.txt, pyproject.toml, pom.xml, build.gradle
 - A CLI entry point: `python -m skills.parquet_to_iceberg.cli <project> --table <name> --namespace <ns>`
 
+The skill does **regex-based** detection. It will miss custom wrappers, dynamic dispatch, reflection, and other dynamic idioms. You (the agent) are expected to run a **manual sanity-check pass** with your own `Read`/`Grep` tools as step 2.5 to catch what the regex misses — see below.
+
 ## Workflow (follow in order)
 
 ### 1. Announce and scope
@@ -41,7 +43,35 @@ report = build_report(matches)
 print(format_report(report, project_root=Path(".")))
 ```
 
-If the report is empty, stop and tell the user there's nothing to migrate.
+If the report is empty, stop and tell the user there's nothing to migrate — **unless** the sanity-check pass below surfaces hits the regex detector missed.
+
+### 2.5. Sanity-check pass (catch what the regex detector missed)
+
+The detector is regex-based and will miss things like:
+- **Custom wrappers** around parquet/ORC calls (`def save_events(df): df.to_parquet(...)`; the caller site `save_events(df)` is invisible to the detector)
+- **Dynamic dispatch** — `getattr(df, "to_" + fmt)`, `spark.read.__getattr__(fmt)`
+- **Reflection** in JVM code (`Class.forName("...ParquetOutputFormat")`)
+- **Configuration-driven formats** — `spark.conf.get("output.format")` consumed by generic sinks
+- **Format strings inside string literals** that aren't SparkSQL (`logger.info("writing parquet to ...")` — false positive; you want to ignore these)
+- **Indirect usage** — helper modules that the detector didn't scan because they live outside the project root, or build-time codegen
+
+Use your own tools as a second pass:
+
+1. Run `Grep` across the project for `parquet|orc|iceberg|ParquetOutputFormat|ParquetInputFormat` (case-insensitive, exclude comments/strings where obvious).
+2. Diff that list against the files the detector already reported. Focus on files with grep hits that are **not** in the detector's output.
+3. For each suspect file: `Read` it, identify whether the hit is:
+   - a **real parquet op** in an idiom the regex doesn't cover (→ report to user, ask them how to handle: add a manual transformer pass, or rewrite by hand);
+   - a **custom wrapper** whose body does a real parquet op (→ report the wrapper function name to the user, suggest they inline or decide a target table for it);
+   - a **false positive** (log string, comment, variable name) → ignore.
+4. Also check for parquet/ORC **imports** (`import pyarrow.parquet`, `import org.apache.spark.sql.DataFrameReader`) in files that have zero detector hits — those files are suspicious and worth reading.
+5. Summarize findings to the user **before** running the conversion:
+   > "The regex detector found N operations in M files. My manual sweep also spotted K additional suspects (custom wrappers / unusual idioms) in these files: … Should I include them in the migration? If yes, how?"
+
+**Guardrails for the sanity-check pass:**
+- Do not silently edit files based on sanity-check findings. The regex detector's output is what the transformers act on; anything extra is user-confirmed manual work.
+- Skim, don't deep-read. If the file is >500 lines, `Grep` for the specific pattern and only `Read` the surrounding context.
+- Be explicit about false-positive risk: if you flag something that turns out to be a log string, apologize and move on — don't insist.
+- Keep the sweep scoped to the project root the user asked about; don't wander into vendored dependencies.
 
 ### 3. Decide the target topology (single-table vs multi-table)
 
