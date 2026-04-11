@@ -3,11 +3,12 @@ import re
 from ..extract import extract_path_arg
 from ..targets import Mapping, Target, build_resolver
 
-_ICEBERG_CONF_COMMENT = (
-    "# Iceberg: set spark.sql.extensions and catalog config in SparkSession builder\n"
-    "# .config('spark.sql.extensions', 'org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions')\n"
-    "# .config('spark.sql.catalog.spark_catalog', 'org.apache.iceberg.spark.SparkSessionCatalog')\n"
-)
+_ICEBERG_CONF_LINES = [
+    "# Iceberg: set spark.sql.extensions and catalog config in SparkSession builder",
+    "# .config('spark.sql.extensions', 'org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions')",
+    "# .config('spark.sql.catalog.spark_catalog', 'org.apache.iceberg.spark.SparkSessionCatalog')",
+]
+_ICEBERG_CONF_MARKER_RE = re.compile(r'spark\.sql\.extensions.*IcebergSparkSessionExtensions')
 
 _BATCH_READ_RE = re.compile(
     r"\.read"
@@ -45,7 +46,7 @@ def transform_pyspark_file(
 
     lines = source.splitlines(keepends=True)
     out: list[str] = []
-    conf_injected = False
+    conf_injected = bool(_ICEBERG_CONF_MARKER_RE.search(source))
 
     for line in lines:
         stripped = line.rstrip()
@@ -53,8 +54,13 @@ def transform_pyspark_file(
         sp = " " * indent
 
         if _STREAM_RE.search(stripped):
-            target = resolver(extract_path_arg(stripped))
-            fqn = target.fqn if target else "NS.TABLE"
+            direction = "write" if "writeStream" in stripped else "read"
+            decision = resolver(extract_path_arg(stripped), direction)
+            if decision.skip:
+                out.append(f"{sp}# iceberg: skipped by mapping (kept as parquet/orc)\n")
+                out.append(line)
+                continue
+            fqn = decision.migrate_to.fqn if decision.migrate_to else "NS.TABLE"
             out.append(
                 f"{sp}# TODO(iceberg): Structured Streaming parquet/orc sink — "
                 f"rewrite manually using .format('iceberg').option('path', '{fqn}') "
@@ -70,14 +76,23 @@ def transform_pyspark_file(
             out.append(line)
             continue
 
-        target = resolver(extract_path_arg(stripped))
+        direction = "read" if is_read else "write"
+        decision = resolver(extract_path_arg(stripped), direction)
+
+        if decision.skip:
+            out.append(f"{sp}# iceberg: skipped by mapping (kept as parquet/orc)\n")
+            out.append(line)
+            continue
+
+        target = decision.migrate_to
         if target is None:
             out.append(f"{sp}# TODO(iceberg): could not resolve target table; add a mapping entry.\n")
             out.append(line)
             continue
 
         if not conf_injected:
-            out.append(sp + _ICEBERG_CONF_COMMENT)
+            for comment_line in _ICEBERG_CONF_LINES:
+                out.append(f"{sp}{comment_line}\n")
             conf_injected = True
 
         if is_read:

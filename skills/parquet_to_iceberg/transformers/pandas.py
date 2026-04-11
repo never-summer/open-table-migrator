@@ -1,9 +1,10 @@
 import re
 
 from ..extract import extract_path_arg
-from ..targets import Mapping, Target, build_resolver
+from ..targets import Decision, Mapping, Target, build_resolver
 
 _PYICEBERG_IMPORT = "from pyiceberg.catalog import load_catalog"
+_PYICEBERG_IMPORT_RE = re.compile(r'from\s+pyiceberg\.catalog\s+import\s+load_catalog')
 _READ_RE = re.compile(r"pd\.read_(?:parquet|orc)\s*\(")
 _WRITE_RE = re.compile(r"\.to_(?:parquet|orc)\s*\(")
 
@@ -26,23 +27,22 @@ def transform_pandas_file(
     fallback = Target(namespace=namespace, table=table_name) if (namespace and table_name) else None
     resolver = build_resolver(mapping, fallback)
 
+    already_has_import = bool(_PYICEBERG_IMPORT_RE.search(source))
     lines = source.splitlines(keepends=True)
 
     # ── Pre-scan: decide per-line target and gather unique targets ──────
-    line_targets: list[Target | None] = []
-    unresolved_lines: set[int] = set()
+    line_decisions: list[Decision | None] = []
     unique_fqns: dict[str, Target] = {}
-    for idx, line in enumerate(lines):
+    for line in lines:
         s = line.rstrip()
-        if _READ_RE.search(s) or _WRITE_RE.search(s):
-            t = resolver(extract_path_arg(s))
-            line_targets.append(t)
-            if t is None:
-                unresolved_lines.add(idx)
-            else:
-                unique_fqns.setdefault(t.fqn, t)
-        else:
-            line_targets.append(None)
+        direction = "read" if _READ_RE.search(s) else ("write" if _WRITE_RE.search(s) else None)
+        if direction is None:
+            line_decisions.append(None)
+            continue
+        d = resolver(extract_path_arg(s), direction)
+        line_decisions.append(d)
+        if d.migrate_to is not None:
+            unique_fqns.setdefault(d.migrate_to.fqn, d.migrate_to)
 
     single = len(unique_fqns) <= 1
 
@@ -69,30 +69,35 @@ def transform_pandas_file(
 
         if i == import_end:
             out.append(line)
-            if not header_injected:
+            if not header_injected and unique_fqns and not already_has_import:
                 out.append(_PYICEBERG_IMPORT + "\n")
                 out.extend(emit_header())
                 header_injected = True
+            elif already_has_import:
+                header_injected = True  # assume previous run already set up catalog + tbl vars
             continue
 
-        # Replace a read/write line if it matched pre-scan
-        target = line_targets[i]
-        is_read = bool(_READ_RE.search(s))
-        is_write = bool(_WRITE_RE.search(s))
-
-        if not (is_read or is_write):
+        decision = line_decisions[i]
+        if decision is None:
             out.append(line)
             continue
 
         indent = len(line) - len(line.lstrip())
         sp = " " * indent
 
-        if target is None:
+        if decision.skip:
+            out.append(f"{sp}# iceberg: skipped by mapping (kept as parquet/orc)\n")
+            out.append(line)
+            continue
+
+        if decision.migrate_to is None:
             out.append(f"{sp}# TODO(iceberg): could not resolve target table for this call; add a mapping entry.\n")
             out.append(line)
             continue
 
-        # If header wasn't injected yet (no imports), inject it now at this indent
+        target = decision.migrate_to
+        is_read = bool(_READ_RE.search(s))
+
         if not header_injected:
             out.extend(emit_header(sp))
             header_injected = True

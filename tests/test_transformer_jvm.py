@@ -98,3 +98,53 @@ def test_java_spark_write_preserves_partition_by():
     assert '.parquet(' not in result
     assert 'writeTo("default.events")' in result
     assert 'partitionBy' in result or 'TODO' in result
+
+
+def test_scala_multi_line_write_chain_save_as_table():
+    """Regression: LearningSparkV2 SortMergeJoinBucketed_7_6.scala case."""
+    source = '''object Example {
+  usersDF.write.format("parquet")
+    .bucketBy(8, "uid")
+    .mode(SaveMode.OverWrite)
+    .saveAsTable("UsersTbl")
+}
+'''
+    result = transform_jvm_file(source, language="scala", table_name="UsersTbl", namespace="default")
+    assert '.format("parquet")' not in result, result
+    assert 'saveAsTable' not in result, result
+    assert 'writeTo("default.UsersTbl")' in result, result
+    assert 'createOrReplace()' in result, result
+    # bucketBy should be preserved as a TODO
+    assert 'bucketBy' in result, result
+
+
+def test_scala_multi_line_read_chain():
+    source = '''object Example {
+  val df = spark.read
+    .format("parquet")
+    .option("header", "true")
+    .load("data/events/")
+}
+'''
+    result = transform_jvm_file(source, language="scala", table_name="events", namespace="default")
+    assert '.format("parquet")' not in result, result
+    assert '.load("data/events/")' not in result, result
+    assert 'format("iceberg")' in result, result
+    assert '.load("default.events")' in result, result
+
+
+def test_java_multi_line_write_chain():
+    source = '''public class Job {
+    public void run(Dataset<Row> df) {
+        df.write()
+          .format("parquet")
+          .mode("overwrite")
+          .save("out/");
+    }
+}
+'''
+    result = transform_jvm_file(source, language="java", table_name="events", namespace="default")
+    assert '.format("parquet")' not in result, result
+    assert '.save("out/")' not in result, result
+    assert 'writeTo("default.events")' in result, result
+    assert 'overwritePartitions()' in result, result

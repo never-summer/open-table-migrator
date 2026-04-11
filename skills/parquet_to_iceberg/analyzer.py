@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from .detector import PatternMatch
@@ -89,6 +90,108 @@ def build_report(matches: list[PatternMatch]) -> Report:
         by_direction=by_direction,
         by_pattern_type=by_pattern_type,
     )
+
+
+# ─── A10: secondary SQL DDL/cache references to mapped tables ────────
+# Commands that refer to a table by name and change its lifecycle or cache state.
+# DROP/TRUNCATE still work on Iceberg (no action needed), but CACHE/UNCACHE/REFRESH
+# semantics are different and the user should be warned.
+_SQL_REF_COMMANDS = (
+    "DROP TABLE",
+    "TRUNCATE TABLE",
+    "CACHE TABLE",
+    "CACHE LAZY TABLE",
+    "UNCACHE TABLE",
+    "REFRESH TABLE",
+    "MSCK REPAIR TABLE",
+    "ANALYZE TABLE",
+)
+
+
+@dataclass
+class DdlReference:
+    file: Path
+    line: int
+    command: str
+    table_name: str
+    snippet: str
+
+
+def _collect_table_names(matches: list[PatternMatch]) -> set[str]:
+    """Gather bare table-name identifiers from detector matches.
+
+    We only care about *identifiers* (saveAsTable("x") → "x"), not file paths —
+    `DROP TABLE s3://bucket/...` is not a thing. Filter out anything with a
+    scheme or a path separator.
+    """
+    names: set[str] = set()
+    for m in matches:
+        if not m.path_arg:
+            continue
+        arg = m.path_arg.strip()
+        if not arg:
+            continue
+        if "://" in arg or "/" in arg or "\\" in arg:
+            continue
+        # bare identifier or db.table — take the last segment too, so both match
+        names.add(arg)
+        if "." in arg:
+            names.add(arg.rsplit(".", 1)[-1])
+    return names
+
+
+def find_ddl_references(
+    matches: list[PatternMatch],
+    project_root: Path,
+) -> list[DdlReference]:
+    """Scan source files for SQL DDL/cache commands referencing table names
+    that appear as targets in the detector's matches.
+
+    The detector catches `saveAsTable("UsersTbl")` but not
+    `spark.sql("DROP TABLE UsersTbl")` — this helper returns the missing
+    references so the CLI / agent can warn about them.
+    """
+    table_names = _collect_table_names(matches)
+    if not table_names:
+        return []
+
+    name_alt = "|".join(sorted((re.escape(n) for n in table_names), key=len, reverse=True))
+    cmd_alt = "|".join(c.replace(" ", r"\s+") for c in _SQL_REF_COMMANDS)
+    pattern = re.compile(
+        rf'\b({cmd_alt})\b(?:\s+IF\s+(?:NOT\s+)?EXISTS)?\s+`?({name_alt})`?',
+        re.IGNORECASE,
+    )
+
+    files_with_matches = {m.file for m in matches}
+    # Also scan sibling files of the same types — the DDL may live in a test or init script.
+    scan_files: set[Path] = set(files_with_matches)
+    for src_file in project_root.rglob("*"):
+        if not src_file.is_file():
+            continue
+        if src_file.suffix.lower() not in {".py", ".java", ".scala"}:
+            continue
+        scan_files.add(src_file)
+
+    refs: list[DdlReference] = []
+    for src_file in sorted(scan_files):
+        try:
+            source = src_file.read_text(errors="replace")
+        except OSError:
+            continue
+        for i, line in enumerate(source.splitlines(), start=1):
+            # Only look inside string literals — crude check: the hit must be
+            # surrounded somewhere on the line by a quote character.
+            if '"' not in line and "'" not in line:
+                continue
+            for match in pattern.finditer(line):
+                refs.append(DdlReference(
+                    file=src_file,
+                    line=i,
+                    command=match.group(1).upper(),
+                    table_name=match.group(2),
+                    snippet=line.strip(),
+                ))
+    return refs
 
 
 def format_report(report: Report, *, project_root: Path) -> str:

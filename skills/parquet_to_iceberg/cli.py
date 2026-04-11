@@ -13,6 +13,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from .analyzer import find_ddl_references
 from .detector import detect_parquet_usage
 from .deps import update_dependencies
 from .targets import Mapping, load_mapping
@@ -45,31 +46,62 @@ def convert_project(
         "mapping": mapping,
     }
 
-    converted = 0
+    changed_files: list[Path] = []
+    unchanged_files: list[Path] = []
+
     for src_file in files:
-        source = src_file.read_text()
+        before = src_file.read_text()
+        after = before
         suffix = src_file.suffix.lower()
 
         if suffix == ".py":
-            source = transform_pandas_file(source, **kw)
-            source = transform_pyspark_file(source, **kw)
-            source = transform_pyarrow_file(source, **kw)
+            after = transform_pandas_file(after, **kw)
+            after = transform_pyspark_file(after, **kw)
+            after = transform_pyarrow_file(after, **kw)
         elif suffix == ".java":
-            source = transform_jvm_file(source, language="java", **kw)
+            after = transform_jvm_file(after, language="java", **kw)
         elif suffix == ".scala":
-            source = transform_jvm_file(source, language="scala", **kw)
+            after = transform_jvm_file(after, language="scala", **kw)
         else:
             continue
 
-        src_file.write_text(source)
-        print(f"  Converted: {src_file.relative_to(project_root)}")
-        converted += 1
+        rel = src_file.relative_to(project_root)
+        if after != before:
+            src_file.write_text(after)
+            changed_files.append(src_file)
+            print(f"  Converted: {rel}")
+        else:
+            unchanged_files.append(src_file)
+            file_hits = [m for m in matches if m.file == src_file]
+            print(f"  WARNING: {rel} — transformer produced no changes despite {len(file_hits)} detector hit(s). Inspect manually.")
 
-    update_dependencies(project_root)
-    print(f"\nConverted {converted} file(s). Updated dependencies.")
-    print("Next steps:")
+    updated_deps = update_dependencies(project_root)
+
+    ddl_refs = find_ddl_references(matches, project_root)
+
+    print(f"\nConverted {len(changed_files)} file(s).")
+    if unchanged_files:
+        print(f"{len(unchanged_files)} file(s) left unchanged (transformer no-op) — see warnings above.")
+    if updated_deps:
+        rels = [str(p.relative_to(project_root)) for p in updated_deps]
+        print(f"Updated build file(s): {', '.join(rels)}")
+    else:
+        print("No build files updated (none found, or all already contain Iceberg).")
+
+    if ddl_refs:
+        print(f"\nSecondary references to mapped tables ({len(ddl_refs)}) — review manually:")
+        for ref in ddl_refs:
+            try:
+                rel = ref.file.relative_to(project_root)
+            except ValueError:
+                rel = ref.file
+            print(f"  {rel}:{ref.line}  {ref.command} {ref.table_name}")
+            print(f"    {ref.snippet}")
+        print("  NOTE: DROP/TRUNCATE still work on Iceberg; CACHE/UNCACHE/REFRESH semantics differ.")
+
+    print("\nNext steps:")
     print("  Python: pip install pyiceberg[sql-sqlite]")
-    print("  JVM:    ensure iceberg-spark-runtime is on the classpath (added to pom.xml/build.gradle)")
+    print("  JVM:    ensure iceberg-spark-runtime is on the classpath")
     print("  Create Iceberg table schema(s) and run your tests")
     return 0
 
@@ -83,7 +115,6 @@ def main() -> None:
     args = parser.parse_args()
 
     mapping = load_mapping(args.mapping) if args.mapping else None
-    # Only pass namespace/table fallback when the user actually supplied --table
     table = args.table
     ns = args.namespace if table else None
 

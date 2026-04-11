@@ -212,13 +212,18 @@ Projects that touch several logical tables use a **mapping file** to route each 
   "default": {"namespace": "default", "table": "unmapped"},
   "tables": [
     {"path_glob": "s3://bucket/events/*", "namespace": "analytics", "table": "events"},
-    {"path_glob": "*/users/*",            "namespace": "analytics", "table": "users"}
+    {"path_glob": "*/users/*",            "namespace": "analytics", "table": "users"},
+    {"path_glob": "s3://legacy/*",        "skip": true},
+    {"path_glob": "s3://bucket/logs/*",   "direction": "write", "namespace": "analytics", "table": "logs"},
+    {"path_glob": "s3://bucket/logs/*",   "direction": "read",  "skip": true}
   ]
 }
 ```
 
 - `tables` — ordered list; first matching `path_glob` (fnmatch style) wins.
 - `default` — optional fallback target when no glob matches.
+- `skip: true` — matching operations are **left as parquet/ORC**. The transformer drops an `iceberg: skipped by mapping` marker above the line so it's obvious on review.
+- `direction: "read" | "write" | "any"` (default `"any"`) — restrict an entry to one side only. Paired entries let you migrate writes but keep reads (or vice versa).
 - You can also pass `--table`/`--namespace` **alongside** `--mapping` as a CLI-level fallback.
 
 Run it:

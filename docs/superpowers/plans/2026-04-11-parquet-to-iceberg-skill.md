@@ -613,6 +613,369 @@ git commit -m "feat: implement parquet pattern detector"
 
 ---
 
+## Task 3.5: Анализатор отчётов и фильтры выбора
+
+**Files:**
+- Create: `skills/parquet-to-iceberg/analyzer.py`
+- Create: `skills/parquet-to-iceberg/filters.py`
+- Create: `tests/test_analyzer.py`
+- Create: `tests/test_filters.py`
+
+Перед трансформацией skill должен уметь:
+1. **Построить отчёт** — сгруппировать найденные паттерны по файлам, направлению (read/write/schema), типу (pandas/pyspark/java_spark/hive/...).
+2. **Отфильтровать** то, что пользователь хочет мигрировать: только чтение, только запись, только определённые файлы (glob), только определённые паттерны.
+
+Классификация `PatternMatch.pattern_type` → `direction`:
+
+| direction | pattern_type |
+|---|---|
+| `read` | `pandas_read`, `pyspark_read`, `pyarrow_read`, `java_spark_read`, `scala_spark_read` |
+| `write` | `pandas_write`, `pyspark_write`, `pyarrow_write`, `java_spark_write`, `scala_spark_write`, `hive_save_as_table`, `hive_insert_overwrite` |
+| `schema` | `hive_create_parquet` |
+
+- [ ] **Step 1: Написать тест анализатора**
+
+```python
+# tests/test_analyzer.py
+from pathlib import Path
+from skills.parquet_to_iceberg.analyzer import build_report, format_report, direction_of
+from skills.parquet_to_iceberg.detector import PatternMatch
+
+
+def _match(file: str, pattern: str, line: int = 1) -> PatternMatch:
+    return PatternMatch(file=Path(file), line=line, pattern_type=pattern, original_code="...")
+
+
+def test_direction_of_read():
+    assert direction_of("pandas_read") == "read"
+    assert direction_of("java_spark_read") == "read"
+    assert direction_of("pyarrow_read") == "read"
+
+
+def test_direction_of_write():
+    assert direction_of("pandas_write") == "write"
+    assert direction_of("hive_save_as_table") == "write"
+    assert direction_of("hive_insert_overwrite") == "write"
+
+
+def test_direction_of_schema():
+    assert direction_of("hive_create_parquet") == "schema"
+
+
+def test_build_report_counts():
+    matches = [
+        _match("a.py", "pandas_read"),
+        _match("a.py", "pandas_write"),
+        _match("b.java", "java_spark_read"),
+        _match("b.java", "hive_create_parquet"),
+    ]
+    report = build_report(matches)
+    assert report.total == 4
+    assert len(report.by_file[Path("a.py")]) == 2
+    assert len(report.by_direction["read"]) == 2
+    assert len(report.by_direction["write"]) == 1
+    assert len(report.by_direction["schema"]) == 1
+    assert "pandas_read" in report.by_pattern_type
+    assert len(report.by_pattern_type["pandas_read"]) == 1
+
+
+def test_build_report_empty():
+    report = build_report([])
+    assert report.total == 0
+    assert report.by_file == {}
+    assert report.by_direction == {"read": [], "write": [], "schema": []}
+
+
+def test_format_report_human_readable(tmp_path):
+    matches = [
+        _match(str(tmp_path / "a.py"), "pandas_read", line=10),
+        _match(str(tmp_path / "a.py"), "pandas_write", line=20),
+        _match(str(tmp_path / "b.java"), "java_spark_read", line=5),
+    ]
+    report = build_report(matches)
+    text = format_report(report, project_root=tmp_path)
+    assert "3 Parquet operation" in text or "Found 3" in text
+    assert "a.py" in text
+    assert "b.java" in text
+    assert "read" in text.lower()
+    assert "write" in text.lower()
+    # Shows line numbers
+    assert ":10" in text or "line 10" in text
+```
+
+- [ ] **Step 2: Запустить — убедиться что падает**
+
+```bash
+pytest tests/test_analyzer.py -v
+```
+
+Ожидаемый вывод: `ImportError: No module named 'skills.parquet_to_iceberg.analyzer'`
+
+- [ ] **Step 3: Реализовать `analyzer.py`**
+
+```python
+# skills/parquet-to-iceberg/analyzer.py
+from dataclasses import dataclass, field
+from pathlib import Path
+from .detector import PatternMatch
+
+
+_READ_TYPES = {
+    "pandas_read", "pyspark_read", "pyarrow_read",
+    "java_spark_read", "scala_spark_read",
+}
+_WRITE_TYPES = {
+    "pandas_write", "pyspark_write", "pyarrow_write",
+    "java_spark_write", "scala_spark_write",
+    "hive_save_as_table", "hive_insert_overwrite",
+}
+_SCHEMA_TYPES = {"hive_create_parquet"}
+
+
+def direction_of(pattern_type: str) -> str:
+    if pattern_type in _READ_TYPES:
+        return "read"
+    if pattern_type in _WRITE_TYPES:
+        return "write"
+    if pattern_type in _SCHEMA_TYPES:
+        return "schema"
+    return "unknown"
+
+
+@dataclass
+class Report:
+    total: int
+    by_file: dict[Path, list[PatternMatch]] = field(default_factory=dict)
+    by_direction: dict[str, list[PatternMatch]] = field(default_factory=dict)
+    by_pattern_type: dict[str, list[PatternMatch]] = field(default_factory=dict)
+
+
+def build_report(matches: list[PatternMatch]) -> Report:
+    by_file: dict[Path, list[PatternMatch]] = {}
+    by_direction: dict[str, list[PatternMatch]] = {"read": [], "write": [], "schema": []}
+    by_pattern_type: dict[str, list[PatternMatch]] = {}
+
+    for m in matches:
+        by_file.setdefault(m.file, []).append(m)
+        d = direction_of(m.pattern_type)
+        by_direction.setdefault(d, []).append(m)
+        by_pattern_type.setdefault(m.pattern_type, []).append(m)
+
+    return Report(
+        total=len(matches),
+        by_file=by_file,
+        by_direction=by_direction,
+        by_pattern_type=by_pattern_type,
+    )
+
+
+def format_report(report: Report, *, project_root: Path) -> str:
+    if report.total == 0:
+        return "No Parquet / Hive usage found."
+
+    lines: list[str] = []
+    lines.append(f"Found {report.total} Parquet operation(s) across {len(report.by_file)} file(s):")
+    lines.append("")
+
+    # Summary by direction
+    lines.append("By direction:")
+    for d in ("read", "write", "schema"):
+        count = len(report.by_direction.get(d, []))
+        if count:
+            lines.append(f"  {d:7s}: {count}")
+    lines.append("")
+
+    # Summary by pattern type
+    lines.append("By pattern type:")
+    for ptype in sorted(report.by_pattern_type):
+        lines.append(f"  {ptype:25s}: {len(report.by_pattern_type[ptype])}")
+    lines.append("")
+
+    # Per-file listing
+    lines.append("Per-file breakdown:")
+    for file in sorted(report.by_file):
+        try:
+            rel = file.relative_to(project_root)
+        except ValueError:
+            rel = file
+        lines.append(f"  {rel}:")
+        for m in report.by_file[file]:
+            lines.append(f"    {m.pattern_type:25s} ({direction_of(m.pattern_type)}) line {m.line}:{m.line}")
+            lines.append(f"      {m.original_code}")
+    return "\n".join(lines)
+```
+
+- [ ] **Step 4: Запустить тесты анализатора**
+
+```bash
+pytest tests/test_analyzer.py -v
+```
+
+Ожидаемый вывод: все 6 тестов `PASSED`.
+
+- [ ] **Step 5: Написать тест фильтров**
+
+```python
+# tests/test_filters.py
+from pathlib import Path
+from skills.parquet_to_iceberg.detector import PatternMatch
+from skills.parquet_to_iceberg.filters import filter_matches
+
+
+def _m(file: str, pattern: str) -> PatternMatch:
+    return PatternMatch(file=Path(file), line=1, pattern_type=pattern, original_code="...")
+
+
+def test_filter_by_direction_read():
+    matches = [
+        _m("a.py", "pandas_read"),
+        _m("a.py", "pandas_write"),
+        _m("b.java", "java_spark_read"),
+    ]
+    result = filter_matches(matches, directions={"read"})
+    assert len(result) == 2
+    assert all(m.pattern_type.endswith("_read") for m in result)
+
+
+def test_filter_by_direction_write():
+    matches = [
+        _m("a.py", "pandas_read"),
+        _m("a.py", "pandas_write"),
+        _m("b.java", "hive_save_as_table"),
+    ]
+    result = filter_matches(matches, directions={"write"})
+    assert len(result) == 2
+    assert all(m.pattern_type in {"pandas_write", "hive_save_as_table"} for m in result)
+
+
+def test_filter_by_direction_schema():
+    matches = [
+        _m("a.java", "hive_create_parquet"),
+        _m("b.py", "pandas_read"),
+    ]
+    result = filter_matches(matches, directions={"schema"})
+    assert len(result) == 1
+    assert result[0].pattern_type == "hive_create_parquet"
+
+
+def test_filter_by_pattern_type():
+    matches = [
+        _m("a.py", "pandas_read"),
+        _m("b.py", "pyspark_read"),
+        _m("c.java", "java_spark_read"),
+    ]
+    result = filter_matches(matches, pattern_types={"pandas_read", "java_spark_read"})
+    assert len(result) == 2
+    files = {m.file.name for m in result}
+    assert files == {"a.py", "c.java"}
+
+
+def test_filter_by_include_glob():
+    matches = [
+        _m("src/etl/pipeline.py", "pandas_read"),
+        _m("src/api/handler.py", "pandas_read"),
+        _m("tests/test_etl.py", "pandas_read"),
+    ]
+    result = filter_matches(matches, include_files=["src/etl/*"])
+    assert len(result) == 1
+    assert "pipeline.py" in str(result[0].file)
+
+
+def test_filter_by_exclude_glob():
+    matches = [
+        _m("src/etl.py", "pandas_read"),
+        _m("tests/test_etl.py", "pandas_read"),
+    ]
+    result = filter_matches(matches, exclude_files=["tests/*"])
+    assert len(result) == 1
+    assert "src/etl.py" in str(result[0].file)
+
+
+def test_filter_combined():
+    matches = [
+        _m("src/etl.py", "pandas_read"),
+        _m("src/etl.py", "pandas_write"),
+        _m("src/api.py", "pandas_read"),
+        _m("tests/test_etl.py", "pandas_read"),
+    ]
+    result = filter_matches(
+        matches,
+        directions={"read"},
+        include_files=["src/*"],
+        exclude_files=["src/api.py"],
+    )
+    assert len(result) == 1
+    assert "src/etl.py" in str(result[0].file)
+    assert result[0].pattern_type == "pandas_read"
+
+
+def test_filter_no_filters_returns_all():
+    matches = [_m("a.py", "pandas_read"), _m("b.py", "pandas_write")]
+    result = filter_matches(matches)
+    assert len(result) == 2
+```
+
+- [ ] **Step 6: Запустить — убедиться что падает**
+
+```bash
+pytest tests/test_filters.py -v
+```
+
+- [ ] **Step 7: Реализовать `filters.py`**
+
+```python
+# skills/parquet-to-iceberg/filters.py
+import fnmatch
+from .detector import PatternMatch
+from .analyzer import direction_of
+
+
+def _matches_any_glob(file_path: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatch(file_path, pat) for pat in patterns)
+
+
+def filter_matches(
+    matches: list[PatternMatch],
+    *,
+    directions: set[str] | None = None,
+    pattern_types: set[str] | None = None,
+    include_files: list[str] | None = None,
+    exclude_files: list[str] | None = None,
+) -> list[PatternMatch]:
+    result: list[PatternMatch] = []
+    for m in matches:
+        if directions is not None and direction_of(m.pattern_type) not in directions:
+            continue
+        if pattern_types is not None and m.pattern_type not in pattern_types:
+            continue
+        # Glob filters work against both absolute and relative-looking paths
+        file_str = str(m.file)
+        if include_files is not None and not _matches_any_glob(file_str, include_files):
+            continue
+        if exclude_files is not None and _matches_any_glob(file_str, exclude_files):
+            continue
+        result.append(m)
+    return result
+```
+
+- [ ] **Step 8: Запустить тесты фильтров**
+
+```bash
+pytest tests/test_filters.py -v
+```
+
+Ожидаемый вывод: все 8 тестов `PASSED`.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add skills/parquet-to-iceberg/analyzer.py skills/parquet-to-iceberg/filters.py \
+        tests/test_analyzer.py tests/test_filters.py
+git commit -m "feat: add analyzer report and selective filter module"
+```
+
+---
+
 ## Task 4: Трансформер — pandas-паттерны
 
 **Files:**

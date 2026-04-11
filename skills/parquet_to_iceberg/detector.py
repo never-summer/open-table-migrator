@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .extract import extract_path_arg
+from .folding import fold_chains
 
 
 @dataclass
@@ -12,6 +13,13 @@ class PatternMatch:
     pattern_type: str
     original_code: str
     path_arg: str | None = None
+    end_line: int | None = None  # last physical line of the logical statement
+
+    @property
+    def direction(self) -> str:
+        # Derived from pattern_type; lazy import avoids a detector ↔ analyzer cycle.
+        from .analyzer import direction_of
+        return direction_of(self.pattern_type)
 
 
 _PY_EXTS = {".py"}
@@ -134,18 +142,21 @@ def detect_parquet_usage(project_root: Path) -> list[PatternMatch]:
         if src_file.suffix.lower() not in (_PY_EXTS | _JVM_EXTS):
             continue
         compiled = _patterns_for_file(src_file)
-        for lineno, line in enumerate(src_file.read_text(errors="replace").splitlines(), 1):
+        source = src_file.read_text(errors="replace")
+        for logical in fold_chains(source):
+            text = logical.folded_text
             seen: set[str] = set()
             for pattern_type, regex in compiled:
                 if pattern_type in seen:
                     continue
-                if regex.search(line):
+                if regex.search(text):
                     matches.append(PatternMatch(
                         file=src_file,
-                        line=lineno,
+                        line=logical.start_line,
                         pattern_type=pattern_type,
-                        original_code=line.strip(),
-                        path_arg=extract_path_arg(line),
+                        original_code=text.strip(),
+                        path_arg=extract_path_arg(text),
+                        end_line=logical.end_line,
                     ))
                     seen.add(pattern_type)
     return matches

@@ -23,7 +23,12 @@ The skill does **regex-based** detection. It will miss custom wrappers, dynamic 
 
 ### 1. Announce and scope
 
-Say: *"I'm using the parquet-to-iceberg skill to migrate this project."* Then identify the project type by checking for `requirements.txt`, `pyproject.toml`, `pom.xml`, `build.gradle`, and any `.py`/`.java`/`.scala` sources. State what you found.
+Say: *"I'm using the parquet-to-iceberg skill to migrate this project."* Then identify the project type by checking for the supported build files and any `.py`/`.java`/`.scala` sources. The skill's `update_dependencies` supports:
+
+- **Python:** `requirements.txt`, `pyproject.toml` (project root only).
+- **JVM:** `pom.xml`, `build.gradle`, `build.gradle.kts`, `build.sbt` — scanned **recursively** (`rglob`) so nested multi-module layouts (Maven reactor, Gradle subprojects, sbt multi-project) are all covered.
+
+State what you found. If the project is a nested layout (multiple `pom.xml` / `build.sbt` in subdirectories), flag that explicitly so the user knows every module will be touched. If you see `build.sbt` anywhere, say so — sbt used to be unsupported and users may still expect a warning.
 
 ### 2. Detect and report
 
@@ -73,31 +78,46 @@ Use your own tools as a second pass:
 - Be explicit about false-positive risk: if you flag something that turns out to be a log string, apologize and move on — don't insist.
 - Keep the sweep scoped to the project root the user asked about; don't wander into vendored dependencies.
 
-### 3. Decide the target topology (single-table vs multi-table)
+### 3. Decide per source / per sink — do NOT assume everything migrates
 
-Look at the **unique non-None `path_arg` values** in the detector output. That set tells you how many logical tables the project touches:
+Group the detector matches by **(path_arg, direction)** — this enumerates every distinct read source and write sink the project touches. For each one, ask the user explicitly:
 
-- **Zero unique paths** (all matches use variables) → fall back to single-table mode and ask for one namespace/table pair.
-- **One unique path** → single-table mode; ask for the target namespace/table.
-- **Multiple unique paths** → **multi-table mode**. Do NOT default everything to one table. Instead:
-  1. Show the user the list of unique `path_arg` values (grouped from the report).
-  2. Ask per path: *"What namespace/table should `s3://bucket/events/*` map to?"* Keep going until every path has a target — or the user tells you to group several paths under one table.
-  3. Build a `mapping.json` file (see `skills/parquet_to_iceberg/targets.py` for the schema):
-     ```json
-     {
-       "default": {"namespace": "default", "table": "unmapped"},
-       "tables": [
-         {"path_glob": "s3://bucket/events/*", "namespace": "analytics", "table": "events"},
-         {"path_glob": "s3://bucket/users/*",  "namespace": "analytics", "table": "users"}
-       ]
-     }
-     ```
-  4. Save it somewhere the user can review (e.g. `./iceberg-mapping.json`) and confirm before running the conversion.
+> *"Operation `read` on `s3://bucket/events/*` (4 call sites in 2 files) — migrate to Iceberg? If yes: namespace/table?"*
+
+The user has three answers for each source/sink:
+
+1. **Yes, migrate to `<namespace>.<table>`** — standard conversion.
+2. **No, keep as parquet/ORC** — the transformer will leave those call sites untouched and drop a `# iceberg: skipped by mapping` marker above them. Use this when the user wants a partial migration (e.g. legacy read path that still needs parquet).
+3. **Skip for now / needs more discussion** — don't build an entry; the transformer will mark the line `TODO(iceberg): could not resolve target`, which acts as a follow-up list.
+
+**Important — don't collapse directions.** The same `path_arg` can legitimately answer differently for read vs write (e.g. "keep reading the legacy parquet dump but write the new copies to Iceberg"). Always ask read and write separately when both exist for the same path, unless the user volunteers that they should be treated together.
+
+When the user wants the same answer for a whole group of paths, let them say so and collapse those into a single broader glob entry — don't force a one-by-one ritual when they've already answered collectively.
+
+Then build a `mapping.json` file and save it somewhere reviewable (e.g. `./iceberg-mapping.json`). The schema supports `skip` and `direction`:
+
+```json
+{
+  "default": {"namespace": "default", "table": "unmapped"},
+  "tables": [
+    {"path_glob": "s3://bucket/events/*", "namespace": "analytics", "table": "events"},
+    {"path_glob": "s3://bucket/users/*",  "namespace": "analytics", "table": "users"},
+    {"path_glob": "s3://legacy/*",        "skip": true},
+    {"path_glob": "s3://bucket/logs/*",   "direction": "write", "namespace": "analytics", "table": "logs"},
+    {"path_glob": "s3://bucket/logs/*",   "direction": "read",  "skip": true}
+  ]
+}
+```
+
+- `skip: true` — matching ops are left as parquet/ORC in place.
+- `direction: "read"|"write"|"any"` (default `"any"`) — restrict an entry to one side. Use paired entries (as in the `logs` example) when read and write diverge.
+- Order matters — first matching entry wins. Put more-specific entries first.
+
+**Confirm the mapping with the user before running the conversion.** Show the final JSON and a one-line summary per row ("`s3://bucket/events/* → analytics.events` (both)"), and wait for approval.
 
 Also always ask:
 - **Catalog type** — local SQLite for dev, Hive Metastore, AWS Glue, Nessie, REST
 - **For JVM projects:** is `iceberg-spark-runtime` already on the cluster classpath?
-- **Scope** — migrate all files, or only a subset? (offer `filter_matches` by direction/pattern/glob)
 
 ### 4. Run the conversion
 
@@ -135,9 +155,15 @@ After conversion:
 
 ### 7. Hand off
 
-Summarize:
+Before summarizing, **diff-check the build files**. The CLI's summary line lists what `update_dependencies` *said* it modified, but you should verify:
+
+1. For every build file the CLI reported as "Updated" — `Read` it and confirm `iceberg-spark-runtime` (JVM) or `pyiceberg` (Python) actually landed.
+2. For every build file the user expected to be touched but the CLI did **not** list — `Read` it too. A missing entry means either (a) the file already had the dep, or (b) the updater didn't recognize the file format. Case (b) is a bug — report it to the user rather than claiming success.
+3. If the CLI printed "No build files updated" but the project clearly has a build file, stop and investigate before handing off.
+
+Then summarize:
 - Number of files converted, by language
-- Dependencies added and to which file
+- Dependencies added and to which file (only files you actually verified)
 - Manual TODOs that remain
 - Suggested next commit message: `refactor: migrate parquet read/write to Apache Iceberg`
 
@@ -145,8 +171,9 @@ Summarize:
 
 ## Guardrails
 
-- **Never silently skip files.** If a file has a parquet pattern the transformers don't cover (e.g., a custom wrapper), report it and ask for guidance.
+- **Never silently skip files.** If a file has a parquet pattern the transformers don't cover (e.g., a custom wrapper), report it and ask for guidance. Explicit `skip: true` in the user-approved mapping is NOT silent — it's requested.
 - **Never invent Iceberg table names.** Always get them from the user — especially in multi-table mode, where guessing a namespace for a path will corrupt the mapping.
+- **Never assume both directions migrate.** When a path is both read and written, ask about each direction unless the user has already collapsed them.
 - **Never delete existing parquet data.** The skill rewrites code; data migration is a separate decision.
 - **Never skip the detector re-run in step 6.** A successful conversion means the detector finds zero residual patterns.
 - **If the user asks for a dry run,** show the report and the planned transformations without touching any files.
