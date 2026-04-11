@@ -203,9 +203,33 @@ git commit -m "refactor: migrate parquet read/write to Apache Iceberg"
 | Maven | `pom.xml` | `org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0` |
 | Gradle | `build.gradle` | `implementation 'org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0'` |
 
+## Multi-table projects
+
+Projects that touch several logical tables use a **mapping file** to route each path to its Iceberg target. JSON format:
+
+```json
+{
+  "default": {"namespace": "default", "table": "unmapped"},
+  "tables": [
+    {"path_glob": "s3://bucket/events/*", "namespace": "analytics", "table": "events"},
+    {"path_glob": "*/users/*",            "namespace": "analytics", "table": "users"}
+  ]
+}
+```
+
+- `tables` — ordered list; first matching `path_glob` (fnmatch style) wins.
+- `default` — optional fallback target when no glob matches.
+- You can also pass `--table`/`--namespace` **alongside** `--mapping` as a CLI-level fallback.
+
+Run it:
+```bash
+python -m skills.parquet_to_iceberg.cli <project> --mapping mapping.json
+```
+
+In a single source file with multiple targets, the Python transformers emit one `catalog = ...` header plus one `tbl_<ns>_<name>` per target, and rewrite each call site to use the right variable. Calls whose path is a variable or doesn't match any glob (and has no fallback) become `# TODO(iceberg): could not resolve target ...` comments.
+
 ## Known Limitations
 
-- **Multi-table projects** require manual splitting by table (run CLI per table)
 - **Structured Streaming** (readStream/writeStream with parquet/orc sinks) is **detected but not rewritten** — the transformer inserts a `TODO(iceberg)` comment. Migrate manually using `.format("iceberg")` + `writeStream.toTable("ns.t")` / `.option("path", ...)`.
 - **pyarrow dataset API** (`ParquetFile`, `ParquetDataset`, `pa.dataset.*`) is also warn-only — rewrite to `catalog.load_table(...).scan().to_arrow()` by hand.
 - **Cloud catalog configs** (Glue, Nessie, REST) need manual setup — this tool generates SQLite dev config for Python, and leaves JVM catalog config untouched

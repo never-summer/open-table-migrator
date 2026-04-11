@@ -1,6 +1,8 @@
 import re
 from typing import Literal
 
+from ..extract import extract_path_arg
+from ..targets import Mapping, Target, build_resolver
 
 _STREAM_RE = re.compile(
     r"\.(?:readStream|writeStream)(?:\(\))?"
@@ -13,10 +15,15 @@ def transform_jvm_file(
     source: str,
     *,
     language: Literal["java", "scala"],
-    table_name: str,
-    namespace: str,
+    table_name: str | None = None,
+    namespace: str | None = None,
+    mapping: Mapping | None = None,
 ) -> str:
-    fqn = f"{namespace}.{table_name}"
+    fallback = Target(namespace=namespace, table=table_name) if (namespace and table_name) else None
+    resolver = build_resolver(mapping, fallback)
+
+    def target_for_line(line: str) -> Target | None:
+        return resolver(extract_path_arg(line))
 
     # ── 0. Streaming — warn only, leave original code in place ──────────
     new_lines: list[str] = []
@@ -24,102 +31,130 @@ def transform_jvm_file(
         if _STREAM_RE.search(line):
             indent = len(line) - len(line.lstrip())
             sp = " " * indent
-            comment = "//" if language in ("java", "scala") else "#"
+            target = target_for_line(line)
+            fqn = target.fqn if target else "NS.TABLE"
             new_lines.append(
-                f"{sp}{comment} TODO(iceberg): Structured Streaming parquet/orc — "
+                f"{sp}// TODO(iceberg): Structured Streaming parquet/orc — "
                 f"rewrite using .format(\"iceberg\").option(\"path\", \"{fqn}\") "
                 f"or writeStream().toTable(\"{fqn}\").\n"
             )
         new_lines.append(line)
     source = "".join(new_lines)
 
-    # ── 1. SQL DDL: STORED AS PARQUET/ORC → USING iceberg ───────────────
-    source = re.sub(
-        r'("\s*CREATE\s+(?:EXTERNAL\s+)?TABLE[^"]*?)\bSTORED\s+AS\s+(?:PARQUET|ORC)\b([^"]*")',
-        lambda m: m.group(1).rstrip() + " USING iceberg" + m.group(2),
-        source,
-        flags=re.IGNORECASE,
-    )
+    # Helper: resolve target for a line of source; returns FQN or None
+    def fqn_or_none(line: str) -> str | None:
+        t = target_for_line(line)
+        return t.fqn if t else None
 
-    # ── 2. SQL DDL: USING parquet/orc → USING iceberg ───────────────────
-    source = re.sub(
-        r'(\bUSING\s+)(?:parquet|orc)\b',
-        lambda m: m.group(1) + "iceberg",
-        source,
-        flags=re.IGNORECASE,
-    )
+    # We need per-line replacements because different lines can route to
+    # different tables. Walk line by line and apply substitutions.
+    output_lines: list[str] = []
+    for raw_line in source.splitlines(keepends=True):
+        line = raw_line
+        fqn = fqn_or_none(line)
 
-    # ── 3. Java .write().[mods].saveAsTable(...) → .writeTo("ns.t").createOrReplace()
-    source = re.sub(
-        r'\.write\(\)(?:\.\w+\([^)]*\))*\.saveAsTable\s*\([^)]*\)',
-        f'.writeTo("{fqn}").createOrReplace()',
-        source,
-    )
-    # Scala .write.[mods].saveAsTable(...)
-    source = re.sub(
-        r'\.write(?:\.\w+\([^)]*\))*\.saveAsTable\s*\([^)]*\)',
-        f'.writeTo("{fqn}").createOrReplace()',
-        source,
-    )
+        # ── 1. SQL DDL: STORED AS PARQUET/ORC → USING iceberg (no FQN needed)
+        line = re.sub(
+            r'("\s*CREATE\s+(?:EXTERNAL\s+)?TABLE[^"]*?)\bSTORED\s+AS\s+(?:PARQUET|ORC)\b([^"]*")',
+            lambda m: m.group(1).rstrip() + " USING iceberg" + m.group(2),
+            line,
+            flags=re.IGNORECASE,
+        )
 
-    # ── 4. Java/Scala reads ─────────────────────────────────────────────
-    # Java: .read().parquet(...) / .read().orc(...) → format("iceberg").load("ns.t")
-    source = re.sub(
-        r'\.read\(\)\.(?:parquet|orc)\s*\([^)]*\)',
-        f'.read().format("iceberg").load("{fqn}")',
-        source,
-    )
-    # Java: .read().[mods].format("parquet"|"orc").load(...) → .read().format("iceberg").load("ns.t")
-    source = re.sub(
-        r'\.read\(\)(?:\.\w+\([^)]*\))*\.format\s*\(\s*"(?:parquet|orc)"\s*\)(?:\.\w+\([^)]*\))*\.load\s*\([^)]*\)',
-        f'.read().format("iceberg").load("{fqn}")',
-        source,
-    )
-    # Scala: .read.parquet(...) / .read.orc(...)
-    source = re.sub(
-        r'\.read\.(?:parquet|orc)\s*\([^)]*\)',
-        f'.read.format("iceberg").load("{fqn}")',
-        source,
-    )
-    # Scala: .read.[mods].format("parquet"|"orc").load(...)
-    source = re.sub(
-        r'\.read(?:\.\w+\([^)]*\))*\.format\s*\(\s*"(?:parquet|orc)"\s*\)(?:\.\w+\([^)]*\))*\.load\s*\([^)]*\)',
-        f'.read.format("iceberg").load("{fqn}")',
-        source,
-    )
+        # ── 2. SQL: USING parquet|orc → USING iceberg
+        line = re.sub(
+            r'(\bUSING\s+)(?:parquet|orc)\b',
+            lambda m: m.group(1) + "iceberg",
+            line,
+            flags=re.IGNORECASE,
+        )
 
-    # ── 5. Java/Scala writes ────────────────────────────────────────────
-    def _replace_write(match: re.Match) -> str:
-        chain = match.group(0)
-        pb_match = re.search(r'\.partitionBy\(([^)]*)\)', chain)
-        replacement = f'.writeTo("{fqn}").overwritePartitions()'
-        if pb_match:
-            replacement += f" /* TODO: partitionBy({pb_match.group(1)}) — add to Iceberg partition spec */"
-        return replacement
+        if fqn is None:
+            # Could be a non-resolvable read/write OR a pure SQL line (already handled above)
+            # Check if this line would have been a read/write — if so, add TODO
+            needs_target = re.search(
+                r'\.read\(\)\.(?:parquet|orc)\s*\('
+                r'|\.read\(\)(?:\.\w+\([^)]*\))*\.format\s*\(\s*"(?:parquet|orc)"\s*\)'
+                r'|\.read\.(?:parquet|orc)\s*\('
+                r'|\.read(?:\.\w+\([^)]*\))*\.format\s*\(\s*"(?:parquet|orc)"\s*\)'
+                r'|\.write\(\)(?:\.\w+\([^)]*\))*\.(?:parquet|orc)\s*\('
+                r'|\.write\(\)(?:\.\w+\([^)]*\))*\.format\s*\(\s*"(?:parquet|orc)"\s*\)'
+                r'|\.write(?:\.\w+\([^)]*\))*\.(?:parquet|orc)\s*\('
+                r'|\.write(?:\.\w+\([^)]*\))*\.format\s*\(\s*"(?:parquet|orc)"\s*\)'
+                r'|\.saveAsTable\s*\(',
+                line,
+            )
+            if needs_target:
+                indent = len(line) - len(line.lstrip())
+                sp = " " * indent
+                output_lines.append(f"{sp}// TODO(iceberg): could not resolve target table; add a mapping entry.\n")
+            output_lines.append(line)
+            continue
 
-    # Java: .write().[mods].parquet/orc(...)
-    source = re.sub(
-        r'\.write\(\)(?:\.\w+\([^)]*\))*\.(?:parquet|orc)\s*\([^)]*\)',
-        _replace_write,
-        source,
-    )
-    # Java: .write().[mods].format("parquet"|"orc")...save(...)
-    source = re.sub(
-        r'\.write\(\)(?:\.\w+\([^)]*\))*\.format\s*\(\s*"(?:parquet|orc)"\s*\)(?:\.\w+\([^)]*\))*\.save\s*\([^)]*\)',
-        _replace_write,
-        source,
-    )
-    # Scala: .write.[mods].parquet/orc(...)
-    source = re.sub(
-        r'\.write(?:\.\w+\([^)]*\))*\.(?:parquet|orc)\s*\([^)]*\)',
-        _replace_write,
-        source,
-    )
-    # Scala: .write.[mods].format("parquet"|"orc")...save(...)
-    source = re.sub(
-        r'\.write(?:\.\w+\([^)]*\))*\.format\s*\(\s*"(?:parquet|orc)"\s*\)(?:\.\w+\([^)]*\))*\.save\s*\([^)]*\)',
-        _replace_write,
-        source,
-    )
+        # ── 3. saveAsTable → writeTo(fqn).createOrReplace()
+        line = re.sub(
+            r'\.write\(\)(?:\.\w+\([^)]*\))*\.saveAsTable\s*\([^)]*\)',
+            f'.writeTo("{fqn}").createOrReplace()',
+            line,
+        )
+        line = re.sub(
+            r'\.write(?:\.\w+\([^)]*\))*\.saveAsTable\s*\([^)]*\)',
+            f'.writeTo("{fqn}").createOrReplace()',
+            line,
+        )
 
-    return source
+        # ── 4. Reads ───────────────────────────────────────────────────
+        line = re.sub(
+            r'\.read\(\)\.(?:parquet|orc)\s*\([^)]*\)',
+            f'.read().format("iceberg").load("{fqn}")',
+            line,
+        )
+        line = re.sub(
+            r'\.read\(\)(?:\.\w+\([^)]*\))*\.format\s*\(\s*"(?:parquet|orc)"\s*\)(?:\.\w+\([^)]*\))*\.load\s*\([^)]*\)',
+            f'.read().format("iceberg").load("{fqn}")',
+            line,
+        )
+        line = re.sub(
+            r'\.read\.(?:parquet|orc)\s*\([^)]*\)',
+            f'.read.format("iceberg").load("{fqn}")',
+            line,
+        )
+        line = re.sub(
+            r'\.read(?:\.\w+\([^)]*\))*\.format\s*\(\s*"(?:parquet|orc)"\s*\)(?:\.\w+\([^)]*\))*\.load\s*\([^)]*\)',
+            f'.read.format("iceberg").load("{fqn}")',
+            line,
+        )
+
+        # ── 5. Writes ──────────────────────────────────────────────────
+        def _replace_write(match: re.Match) -> str:
+            chain = match.group(0)
+            pb_match = re.search(r'\.partitionBy\(([^)]*)\)', chain)
+            replacement = f'.writeTo("{fqn}").overwritePartitions()'
+            if pb_match:
+                replacement += f" /* TODO: partitionBy({pb_match.group(1)}) — add to Iceberg partition spec */"
+            return replacement
+
+        line = re.sub(
+            r'\.write\(\)(?:\.\w+\([^)]*\))*\.(?:parquet|orc)\s*\([^)]*\)',
+            _replace_write,
+            line,
+        )
+        line = re.sub(
+            r'\.write\(\)(?:\.\w+\([^)]*\))*\.format\s*\(\s*"(?:parquet|orc)"\s*\)(?:\.\w+\([^)]*\))*\.save\s*\([^)]*\)',
+            _replace_write,
+            line,
+        )
+        line = re.sub(
+            r'\.write(?:\.\w+\([^)]*\))*\.(?:parquet|orc)\s*\([^)]*\)',
+            _replace_write,
+            line,
+        )
+        line = re.sub(
+            r'\.write(?:\.\w+\([^)]*\))*\.format\s*\(\s*"(?:parquet|orc)"\s*\)(?:\.\w+\([^)]*\))*\.save\s*\([^)]*\)',
+            _replace_write,
+            line,
+        )
+
+        output_lines.append(line)
+
+    return "".join(output_lines)

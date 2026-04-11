@@ -2,6 +2,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .extract import extract_path_arg
+
 
 @dataclass
 class PatternMatch:
@@ -9,6 +11,7 @@ class PatternMatch:
     line: int
     pattern_type: str
     original_code: str
+    path_arg: str | None = None
 
 
 _PY_EXTS = {".py"}
@@ -142,6 +145,7 @@ def detect_parquet_usage(project_root: Path) -> list[PatternMatch]:
                         line=lineno,
                         pattern_type=pattern_type,
                         original_code=line.strip(),
+                        path_arg=extract_path_arg(line),
                     ))
                     seen.add(pattern_type)
     return matches

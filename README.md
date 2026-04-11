@@ -26,10 +26,21 @@ See the [full conversion reference](skills/parquet_to_iceberg/SKILL.md#conversio
 
 ### As a CLI
 
+Single-table:
+
 ```bash
 PYTHONPATH=. python -m skills.parquet_to_iceberg.cli <project_path> \
     --table <table_name> --namespace <namespace>
 ```
+
+Multi-table (one Iceberg table per path glob):
+
+```bash
+PYTHONPATH=. python -m skills.parquet_to_iceberg.cli <project_path> \
+    --mapping ./iceberg-mapping.json
+```
+
+See [SKILL.md § Multi-table projects](skills/parquet_to_iceberg/SKILL.md#multi-table-projects) for the mapping file format.
 
 ### Via Claude Code
 
@@ -69,7 +80,7 @@ skills/parquet_to_iceberg/
 
 ## Known limitations
 
-- Multi-table projects must be split and run once per table
+- Path arguments must be **string literals** for multi-table routing (variables and f-strings are marked `TODO(iceberg)` for manual mapping)
 - Streaming writes (Structured Streaming parquet sinks) are out of scope
 - Existing parquet *data* is not migrated — the skill rewrites code only; use `CALL catalog.system.migrate(...)` for in-place Hive migration
 - JVM coordinates target Spark 3.5 + Scala 2.12; adjust manually for other versions
