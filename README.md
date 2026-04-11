@@ -1,0 +1,77 @@
+# parquet-iceberg
+
+A Claude Code **skill** and **subagent** that migrate Python, Java, and Scala projects from Apache Parquet (and Hive-parquet) to Apache Iceberg tables.
+
+## What's in this repo
+
+| Path | Purpose |
+|---|---|
+| [skills/parquet_to_iceberg/](skills/parquet_to_iceberg/) | The skill: detector, analyzer, filters, transformers, dependency updater, CLI |
+| [skills/parquet_to_iceberg/SKILL.md](skills/parquet_to_iceberg/SKILL.md) | Full skill reference — patterns, conversion tables, limitations |
+| [.claude/agents/parquet-to-iceberg-migrator.md](.claude/agents/parquet-to-iceberg-migrator.md) | The subagent that drives the migration end-to-end |
+| [tests/](tests/) | 60 unit + integration tests covering detector, transformers, deps, CLI |
+| [tests/fixtures/](tests/fixtures/) | Minimal sample projects in each supported stack |
+| [docs/superpowers/plans/](docs/superpowers/plans/) | Implementation plan (12 tasks) |
+
+## What it converts
+
+**Python** — pandas, PySpark, pyarrow → pyiceberg
+**JVM** — Java/Scala Spark Dataset API → Iceberg Spark runtime
+**Hive SparkSQL** — `STORED AS PARQUET` / `saveAsTable` → `USING iceberg` / `writeTo(...)`
+
+See the [full conversion reference](skills/parquet_to_iceberg/SKILL.md#conversion-reference--python) in SKILL.md.
+
+## Usage
+
+### As a CLI
+
+```bash
+PYTHONPATH=. python -m skills.parquet_to_iceberg.cli <project_path> \
+    --table <table_name> --namespace <namespace>
+```
+
+### Via Claude Code
+
+Say something like *"migrate this project to iceberg"* or *"convert parquet to iceberg"* (Russian works too: *"мигрируй на iceberg"*). The [parquet-to-iceberg-migrator](.claude/agents/parquet-to-iceberg-migrator.md) agent takes over and:
+
+1. Detects parquet usage across `.py`/`.java`/`.scala`
+2. Shows a report broken down by file, direction, and pattern type
+3. Asks for target table name, namespace, and catalog type
+4. Runs the transformers and updates build files
+5. Surfaces manual TODOs (partition specs, catalog config, data migration)
+6. Re-runs the detector to verify zero residual patterns
+
+## Running the tests
+
+```bash
+PYTHONPATH=. pytest tests/ --ignore=tests/fixtures -v
+```
+
+All 60 tests should pass. Fixtures under `tests/fixtures/` are deliberately excluded — they're sample inputs, not test modules.
+
+## Project layout inside the skill
+
+```
+skills/parquet_to_iceberg/
+├── SKILL.md              # Skill frontmatter + reference doc
+├── detector.py           # Regex scanner: 13 pattern types
+├── analyzer.py           # build_report / format_report
+├── filters.py            # filter_matches by direction/pattern/glob
+├── deps.py               # update_dependencies for 4 build file formats
+├── cli.py                # python -m skills.parquet_to_iceberg.cli
+└── transformers/
+    ├── pandas.py
+    ├── pyspark.py
+    ├── pyarrow.py
+    └── jvm.py            # java + scala (language= param)
+```
+
+## Known limitations
+
+- Multi-table projects must be split and run once per table
+- Streaming writes (Structured Streaming parquet sinks) are out of scope
+- Existing parquet *data* is not migrated — the skill rewrites code only; use `CALL catalog.system.migrate(...)` for in-place Hive migration
+- JVM coordinates target Spark 3.5 + Scala 2.12; adjust manually for other versions
+- `partitionBy(...)` in JVM code is preserved as a `TODO` comment for the user to add to the Iceberg partition spec
+
+Full list in [SKILL.md § Known Limitations](skills/parquet_to_iceberg/SKILL.md#known-limitations).
