@@ -8,3 +8,7 @@ build/
 .venv/
 venv/
 *.db
+
+# Claude Code local settings (.claude/agents/ is shared; settings.json is per-user)
+.claude/settings.json
+.claude/settings.local.json
