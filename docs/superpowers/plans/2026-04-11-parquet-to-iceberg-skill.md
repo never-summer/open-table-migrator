@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Создать Claude Code skill, который при вызове анализирует проект, находит все операции чтения/записи Parquet и конвертирует их в Apache Iceberg с обновлением зависимостей и сохранением тестов.
+**Goal:** Создать Claude Code skill, который при вызове анализирует проект (Python или Java/Scala), находит все операции чтения/записи Parquet и Hive-таблиц с parquet-хранением, и конвертирует их в Apache Iceberg с обновлением зависимостей и сохранением тестов.
 
-**Architecture:** Skill-файл содержит инструкции для Claude по детектированию паттернов Parquet в Python-проектах (pandas, PySpark, pyarrow, polars) и их замене на Iceberg-эквиваленты. Каждый паттерн покрывается отдельным блоком преобразования. Для тестирования skill используются фикстуры — минимальные проекты с Parquet-кодом, против которых запускается skill и проверяется корректность конверсии.
+**Architecture:** Skill-файл содержит инструкции для Claude по детектированию паттернов Parquet в Python-проектах (pandas, PySpark, pyarrow) и Java/Scala-проектах (Spark Dataset API, Hive через HiveContext/SparkSQL), и их замене на Iceberg-эквиваленты. Каждый паттерн покрывается отдельным блоком преобразования. Для тестирования skill используются фикстуры — минимальные проекты с Parquet-кодом, против которых запускается skill и проверяется корректность конверсии.
 
-**Tech Stack:** Python 3.11+, pyiceberg, pandas, PySpark 3.x, pyarrow, polars, pytest, bats (bash tests)
+**Tech Stack:** Python 3.11+, pyiceberg, pandas, PySpark 3.x, pyarrow, Java 11+, Scala 2.12, Apache Spark 3.5, Apache Iceberg Spark Runtime 1.5.x, Maven/Gradle, pytest
 
 ---
 
@@ -118,13 +118,19 @@ git commit -m "test: add pandas parquet fixture project"
 
 ---
 
-## Task 2: Фикстуры — PySpark и pyarrow
+## Task 2: Фикстуры — PySpark, pyarrow, Java/Spark, Hive/SparkSQL
 
 **Files:**
 - Create: `tests/fixtures/python-pyspark/src/jobs.py`
 - Create: `tests/fixtures/python-pyspark/requirements.txt`
 - Create: `tests/fixtures/python-pyarrow/src/store.py`
 - Create: `tests/fixtures/python-pyarrow/requirements.txt`
+- Create: `tests/fixtures/java-spark/src/main/java/com/example/EventsJob.java`
+- Create: `tests/fixtures/java-spark/pom.xml`
+- Create: `tests/fixtures/scala-spark/src/main/scala/com/example/EventsJob.scala`
+- Create: `tests/fixtures/scala-spark/build.gradle`
+- Create: `tests/fixtures/java-hive/src/main/java/com/example/HiveEtl.java`
+- Create: `tests/fixtures/java-hive/pom.xml`
 
 - [ ] **Step 1: Написать PySpark-фикстуру**
 
@@ -188,11 +194,152 @@ def make_sample_table() -> pa.Table:
     )
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Написать Java/Spark фикстуру**
+
+```java
+// tests/fixtures/java-spark/src/main/java/com/example/EventsJob.java
+package com.example;
+
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+
+public class EventsJob {
+    public static Dataset<Row> loadEvents(SparkSession spark, String path) {
+        return spark.read().parquet(path);
+    }
+
+    public static void saveEvents(Dataset<Row> df, String path) {
+        df.write().mode("overwrite").parquet(path);
+    }
+
+    public static Dataset<Row> countByStatus(Dataset<Row> df) {
+        return df.groupBy("status").count();
+    }
+}
+```
+
+- [ ] **Step 5: Написать `pom.xml` для Java/Spark фикстуры**
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example</groupId>
+    <artifactId>events-job</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_2.12</artifactId>
+            <version>3.5.0</version>
+        </dependency>
+    </dependencies>
+</project>
+```
+
+- [ ] **Step 6: Написать Scala/Spark фикстуру**
+
+```scala
+// tests/fixtures/scala-spark/src/main/scala/com/example/EventsJob.scala
+package com.example
+
+import org.apache.spark.sql.{DataFrame, SparkSession}
+
+object EventsJob {
+  def loadEvents(spark: SparkSession, path: String): DataFrame =
+    spark.read.parquet(path)
+
+  def saveEvents(df: DataFrame, path: String): Unit =
+    df.write.mode("overwrite").parquet(path)
+
+  def countByStatus(df: DataFrame): DataFrame =
+    df.groupBy("status").count()
+}
+```
+
+- [ ] **Step 7: Написать `build.gradle` для Scala-фикстуры**
+
+```groovy
+// tests/fixtures/scala-spark/build.gradle
+plugins {
+    id 'scala'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.scala-lang:scala-library:2.12.18'
+    implementation 'org.apache.spark:spark-sql_2.12:3.5.0'
+}
+```
+
+- [ ] **Step 8: Написать Java/Hive фикстуру (Hive через SparkSQL)**
+
+```java
+// tests/fixtures/java-hive/src/main/java/com/example/HiveEtl.java
+package com.example;
+
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+
+public class HiveEtl {
+    public static void createHiveTable(SparkSession spark) {
+        spark.sql("CREATE TABLE IF NOT EXISTS events (id BIGINT, status STRING, value DOUBLE) STORED AS PARQUET");
+    }
+
+    public static Dataset<Row> readHive(SparkSession spark) {
+        return spark.sql("SELECT * FROM events");
+    }
+
+    public static void writeHive(Dataset<Row> df) {
+        df.write().mode("overwrite").saveAsTable("events");
+    }
+}
+```
+
+- [ ] **Step 9: Написать `pom.xml` для Hive-фикстуры**
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example</groupId>
+    <artifactId>hive-etl</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_2.12</artifactId>
+            <version>3.5.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-hive_2.12</artifactId>
+            <version>3.5.0</version>
+        </dependency>
+    </dependencies>
+</project>
+```
+
+- [ ] **Step 10: Commit**
 
 ```bash
-git add tests/fixtures/python-pyspark/ tests/fixtures/python-pyarrow/
-git commit -m "test: add pyspark and pyarrow fixture projects"
+git add tests/fixtures/python-pyspark/ tests/fixtures/python-pyarrow/ \
+        tests/fixtures/java-spark/ tests/fixtures/scala-spark/ tests/fixtures/java-hive/
+git commit -m "test: add pyspark, pyarrow, java-spark, scala-spark, java-hive fixtures"
 ```
 
 ---
@@ -275,7 +422,7 @@ def test_detects_pyarrow_write(tmp_path):
     assert any(m.pattern_type == "pyarrow_write" for m in matches)
 
 
-def test_skips_non_python_files(tmp_path):
+def test_skips_non_source_files(tmp_path):
     write_file(tmp_path, "README.md", "pd.read_parquet is useful")
     matches = detect_parquet_usage(tmp_path)
     assert len(matches) == 0
@@ -284,6 +431,69 @@ def test_skips_non_python_files(tmp_path):
 def test_no_matches_in_clean_project(tmp_path):
     write_file(tmp_path, "app.py", "x = 1 + 1")
     assert detect_parquet_usage(tmp_path) == []
+
+
+# ─── Java/Scala Spark patterns ─────────────────────────────────────────
+
+def test_detects_java_spark_read(tmp_path):
+    write_file(tmp_path, "src/Job.java", """
+        import org.apache.spark.sql.Dataset;
+        public class Job {
+            Dataset<Row> df = spark.read().parquet("data/events/");
+        }
+    """)
+    matches = detect_parquet_usage(tmp_path)
+    assert any(m.pattern_type == "java_spark_read" for m in matches)
+
+
+def test_detects_java_spark_write(tmp_path):
+    write_file(tmp_path, "src/Job.java", """
+        df.write().mode("overwrite").parquet("output/");
+    """)
+    matches = detect_parquet_usage(tmp_path)
+    assert any(m.pattern_type == "java_spark_write" for m in matches)
+
+
+def test_detects_scala_spark_read(tmp_path):
+    write_file(tmp_path, "src/Job.scala", """
+        val df = spark.read.parquet("data/events/")
+    """)
+    matches = detect_parquet_usage(tmp_path)
+    assert any(m.pattern_type == "scala_spark_read" for m in matches)
+
+
+def test_detects_scala_spark_write(tmp_path):
+    write_file(tmp_path, "src/Job.scala", """
+        df.write.mode("overwrite").parquet("output/")
+    """)
+    matches = detect_parquet_usage(tmp_path)
+    assert any(m.pattern_type == "scala_spark_write" for m in matches)
+
+
+# ─── Hive / SparkSQL patterns ──────────────────────────────────────────
+
+def test_detects_hive_stored_as_parquet(tmp_path):
+    write_file(tmp_path, "src/Hive.java", '''
+        spark.sql("CREATE TABLE events (id BIGINT) STORED AS PARQUET");
+    ''')
+    matches = detect_parquet_usage(tmp_path)
+    assert any(m.pattern_type == "hive_create_parquet" for m in matches)
+
+
+def test_detects_hive_save_as_table(tmp_path):
+    write_file(tmp_path, "src/Hive.java", """
+        df.write().mode("overwrite").saveAsTable("events");
+    """)
+    matches = detect_parquet_usage(tmp_path)
+    assert any(m.pattern_type == "hive_save_as_table" for m in matches)
+
+
+def test_detects_hive_insert_into(tmp_path):
+    write_file(tmp_path, "src/Hive.java", '''
+        spark.sql("INSERT OVERWRITE TABLE events SELECT * FROM staging");
+    ''')
+    matches = detect_parquet_usage(tmp_path)
+    assert any(m.pattern_type == "hive_insert_overwrite" for m in matches)
 ```
 
 - [ ] **Step 2: Запустить тест — убедиться что падает**
@@ -311,26 +521,68 @@ class PatternMatch:
     original_code: str
 
 
-_PATTERNS: list[tuple[str, str]] = [
+# File extensions to scan, grouped by language family
+_PY_EXTS = {".py"}
+_JVM_EXTS = {".java", ".scala"}
+
+# Python patterns (pandas / pyspark / pyarrow)
+_PY_PATTERNS: list[tuple[str, str]] = [
     ("pandas_read",    r"pd\.read_parquet\s*\("),
     ("pandas_write",   r"\.to_parquet\s*\("),
     ("pyspark_read",   r"\.read\.parquet\s*\("),
-    ("pyspark_write",  r"\.write(?:\.\w+)*\.parquet\s*\("),
+    ("pyspark_write",  r"\.write(?:\.\w+\([^)]*\))*\.parquet\s*\("),
     ("pyarrow_read",   r"pq\.read_table\s*\("),
     ("pyarrow_write",  r"pq\.write_table\s*\("),
 ]
 
-_COMPILED = [(name, re.compile(pat)) for name, pat in _PATTERNS]
+# Java Spark patterns — Java uses .read().parquet() with parens
+_JAVA_SPARK_PATTERNS: list[tuple[str, str]] = [
+    ("java_spark_read",   r"\.read\(\)\.parquet\s*\("),
+    ("java_spark_write",  r"\.write\(\)(?:\.\w+\([^)]*\))*\.parquet\s*\("),
+]
+
+# Scala Spark patterns — Scala omits parens: .read.parquet
+_SCALA_SPARK_PATTERNS: list[tuple[str, str]] = [
+    ("scala_spark_read",   r"\.read\.parquet\s*\("),
+    ("scala_spark_write",  r"\.write(?:\.\w+\([^)]*\))*\.parquet\s*\("),
+]
+
+# Hive/SparkSQL patterns — look inside SQL string literals and API calls
+_HIVE_PATTERNS: list[tuple[str, str]] = [
+    ("hive_create_parquet",    r'"[^"]*\bSTORED\s+AS\s+PARQUET\b[^"]*"'),
+    ("hive_save_as_table",     r"\.saveAsTable\s*\("),
+    ("hive_insert_overwrite",  r'"[^"]*\bINSERT\s+OVERWRITE\s+TABLE\b[^"]*"'),
+]
+
+_COMPILED_PY = [(name, re.compile(pat, re.IGNORECASE)) for name, pat in _PY_PATTERNS]
+_COMPILED_JAVA = [(name, re.compile(pat, re.IGNORECASE)) for name, pat in _JAVA_SPARK_PATTERNS + _HIVE_PATTERNS]
+_COMPILED_SCALA = [(name, re.compile(pat, re.IGNORECASE)) for name, pat in _SCALA_SPARK_PATTERNS + _HIVE_PATTERNS]
+
+
+def _patterns_for_file(path: Path) -> list[tuple[str, re.Pattern]]:
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        return _COMPILED_PY
+    if suffix == ".java":
+        return _COMPILED_JAVA
+    if suffix == ".scala":
+        return _COMPILED_SCALA
+    return []
 
 
 def detect_parquet_usage(project_root: Path) -> list[PatternMatch]:
     matches: list[PatternMatch] = []
-    for py_file in sorted(project_root.rglob("*.py")):
-        for lineno, line in enumerate(py_file.read_text(errors="replace").splitlines(), 1):
-            for pattern_type, regex in _COMPILED:
+    for src_file in sorted(project_root.rglob("*")):
+        if not src_file.is_file():
+            continue
+        if src_file.suffix.lower() not in (_PY_EXTS | _JVM_EXTS):
+            continue
+        compiled = _patterns_for_file(src_file)
+        for lineno, line in enumerate(src_file.read_text(errors="replace").splitlines(), 1):
+            for pattern_type, regex in compiled:
                 if regex.search(line):
                     matches.append(PatternMatch(
-                        file=py_file,
+                        file=src_file,
                         line=lineno,
                         pattern_type=pattern_type,
                         original_code=line.strip(),
@@ -350,7 +602,7 @@ def detect_parquet_usage(project_root: Path) -> list[PatternMatch]:
 pytest tests/test_detector.py -v
 ```
 
-Ожидаемый вывод: все 8 тестов `PASSED`.
+Ожидаемый вывод: все 15 тестов `PASSED` (pandas ×2, pyspark ×2, pyarrow ×2, java_spark ×2, scala_spark ×2, hive ×3, skip/empty ×2).
 
 - [ ] **Step 6: Commit**
 
@@ -784,13 +1036,254 @@ git commit -m "feat: implement pyarrow parquet→iceberg transformer"
 
 ---
 
+## Task 6.5: Трансформер — Java/Scala Spark + Hive
+
+**Files:**
+- Create: `skills/parquet-to-iceberg/transformers/jvm.py`
+- Create: `tests/test_transformer_jvm.py`
+
+Трансформер обрабатывает `.java` и `.scala` файлы. Общая логика: заменить вызовы Parquet API на Iceberg-эквиваленты через `writeTo(...)` / `spark.table(...)`, а Hive SQL `STORED AS PARQUET` / `saveAsTable` — на `USING iceberg` / `writeTo(...).createOrReplace()`.
+
+### Таблица соответствий (JVM)
+
+| Было (Java) | Стало |
+|---|---|
+| `spark.read().parquet(path)` | `spark.read().format("iceberg").load("ns.table")` |
+| `df.write().mode("overwrite").parquet(path)` | `df.writeTo("ns.table").overwritePartitions()` |
+| `df.write().saveAsTable("t")` | `df.writeTo("ns.t").createOrReplace()` |
+| `CREATE TABLE ... STORED AS PARQUET` | `CREATE TABLE ... USING iceberg` |
+| `INSERT OVERWRITE TABLE t SELECT ...` | `INSERT OVERWRITE TABLE ns.t SELECT ...` *(без изменений, работает с Iceberg через Spark)* |
+
+| Было (Scala) | Стало |
+|---|---|
+| `spark.read.parquet(path)` | `spark.read.format("iceberg").load("ns.table")` |
+| `df.write.mode("overwrite").parquet(path)` | `df.writeTo("ns.table").overwritePartitions()` |
+
+- [ ] **Step 1: Написать тест JVM-трансформера**
+
+```python
+# tests/test_transformer_jvm.py
+from skills.parquet_to_iceberg.transformers.jvm import transform_jvm_file
+
+
+def test_transforms_java_spark_read():
+    source = '''package com.example;
+import org.apache.spark.sql.Dataset;
+
+public class Job {
+    Dataset<Row> df = spark.read().parquet("data/events/");
+}
+'''
+    result = transform_jvm_file(source, language="java", table_name="events", namespace="default")
+    assert 'spark.read().parquet' not in result
+    assert 'format("iceberg")' in result
+    assert '"default.events"' in result
+
+
+def test_transforms_java_spark_write():
+    source = '''package com.example;
+public class Job {
+    public void run(Dataset<Row> df) {
+        df.write().mode("overwrite").parquet("output/");
+    }
+}
+'''
+    result = transform_jvm_file(source, language="java", table_name="events", namespace="default")
+    assert '.parquet(' not in result
+    assert 'writeTo("default.events")' in result
+    assert 'overwritePartitions()' in result
+
+
+def test_transforms_scala_spark_read():
+    source = '''package com.example
+import org.apache.spark.sql.{DataFrame, SparkSession}
+
+object Job {
+  def load(spark: SparkSession): DataFrame = spark.read.parquet("data/")
+}
+'''
+    result = transform_jvm_file(source, language="scala", table_name="events", namespace="default")
+    assert 'spark.read.parquet' not in result
+    assert 'format("iceberg")' in result
+
+
+def test_transforms_scala_spark_write():
+    source = '''object Job {
+  def save(df: DataFrame): Unit = df.write.mode("overwrite").parquet("out/")
+}
+'''
+    result = transform_jvm_file(source, language="scala", table_name="events", namespace="default")
+    assert '.parquet(' not in result
+    assert 'writeTo("default.events")' in result
+
+
+def test_transforms_hive_stored_as_parquet():
+    source = '''public class Hive {
+    public void run() {
+        spark.sql("CREATE TABLE events (id BIGINT, status STRING) STORED AS PARQUET");
+    }
+}
+'''
+    result = transform_jvm_file(source, language="java", table_name="events", namespace="default")
+    assert 'STORED AS PARQUET' not in result
+    assert 'USING iceberg' in result
+
+
+def test_transforms_save_as_table():
+    source = '''public class Hive {
+    public void run(Dataset<Row> df) {
+        df.write().mode("overwrite").saveAsTable("events");
+    }
+}
+'''
+    result = transform_jvm_file(source, language="java", table_name="events", namespace="default")
+    assert 'saveAsTable' not in result
+    assert 'writeTo("default.events")' in result
+    assert 'createOrReplace()' in result
+
+
+def test_preserves_unrelated_lines():
+    source = '''public class Job {
+    private static final String APP = "etl";
+    public Dataset<Row> load() {
+        Dataset<Row> df = spark.read().parquet("in/");
+        return df.filter("status = 'active'");
+    }
+}
+'''
+    result = transform_jvm_file(source, language="java", table_name="events", namespace="default")
+    assert 'APP = "etl"' in result
+    assert 'filter("status = \\'active\\'")' in result or "filter(\"status = 'active'\")" in result
+
+
+def test_java_spark_write_preserves_partition_by():
+    # Chained .partitionBy(...) should become part of writeTo flow; we accept it as a comment hint
+    source = '''df.write().partitionBy("day").mode("overwrite").parquet("out/");
+'''
+    result = transform_jvm_file(source, language="java", table_name="events", namespace="default")
+    assert '.parquet(' not in result
+    assert 'writeTo("default.events")' in result
+    # partitionBy info preserved as TODO comment for manual adjustment
+    assert 'partitionBy' in result or 'TODO' in result
+```
+
+- [ ] **Step 2: Запустить — убедиться что падает**
+
+```bash
+pytest tests/test_transformer_jvm.py -v
+```
+
+Ожидаемый вывод: `ImportError: No module named 'skills.parquet_to_iceberg.transformers.jvm'`
+
+- [ ] **Step 3: Реализовать `jvm.py`**
+
+```python
+# skills/parquet-to-iceberg/transformers/jvm.py
+import re
+from typing import Literal
+
+
+_JAVA_LINE_TERM = ";"
+_SCALA_LINE_TERM = ""
+
+
+def transform_jvm_file(
+    source: str,
+    *,
+    language: Literal["java", "scala"],
+    table_name: str,
+    namespace: str,
+) -> str:
+    fqn = f"{namespace}.{table_name}"
+    term = _JAVA_LINE_TERM if language == "java" else _SCALA_LINE_TERM
+
+    # Pattern 1: Hive CREATE TABLE ... STORED AS PARQUET → USING iceberg
+    source = re.sub(
+        r'("\s*CREATE\s+TABLE[^"]*?)\bSTORED\s+AS\s+PARQUET\b([^"]*")',
+        lambda m: m.group(1).rstrip() + " USING iceberg" + m.group(2),
+        source,
+        flags=re.IGNORECASE,
+    )
+
+    # Pattern 2: Java .write().[mods...].saveAsTable("x") → .writeTo("ns.x").createOrReplace()
+    # Java syntax with parens: .write()
+    source = re.sub(
+        r'\.write\(\)(?:\.\w+\([^)]*\))*\.saveAsTable\s*\(\s*"[^"]*"\s*\)',
+        f'.writeTo("{fqn}").createOrReplace()',
+        source,
+    )
+    # Scala syntax without parens: .write
+    source = re.sub(
+        r'\.write(?:\.\w+\([^)]*\))*\.saveAsTable\s*\(\s*"[^"]*"\s*\)',
+        f'.writeTo("{fqn}").createOrReplace()',
+        source,
+    )
+
+    # Pattern 3: Java spark.read().parquet(path) → spark.read().format("iceberg").load("ns.t")
+    source = re.sub(
+        r'\.read\(\)\.parquet\s*\(\s*"[^"]*"\s*\)',
+        f'.read().format("iceberg").load("{fqn}")',
+        source,
+    )
+    # Pattern 3-Scala: spark.read.parquet("...") → spark.read.format("iceberg").load("ns.t")
+    source = re.sub(
+        r'\.read\.parquet\s*\(\s*"[^"]*"\s*\)',
+        f'.read.format("iceberg").load("{fqn}")',
+        source,
+    )
+
+    # Pattern 4: Java .write().[mods].parquet("path") → .writeTo("ns.t").overwritePartitions()
+    # Preserve partitionBy info as comment if present
+    def _replace_java_write(match: re.Match) -> str:
+        chain = match.group(0)
+        pb_match = re.search(r'\.partitionBy\(([^)]*)\)', chain)
+        replacement = f'.writeTo("{fqn}").overwritePartitions()'
+        if pb_match:
+            replacement += f" /* TODO: partitionBy({pb_match.group(1)}) — add to Iceberg partition spec */"
+        return replacement
+
+    source = re.sub(
+        r'\.write\(\)(?:\.\w+\([^)]*\))*\.parquet\s*\(\s*"[^"]*"\s*\)',
+        _replace_java_write,
+        source,
+    )
+    # Scala write chain
+    source = re.sub(
+        r'\.write(?:\.\w+\([^)]*\))*\.parquet\s*\(\s*"[^"]*"\s*\)',
+        _replace_java_write,
+        source,
+    )
+
+    return source
+```
+
+- [ ] **Step 4: Запустить тесты JVM-трансформера**
+
+```bash
+pytest tests/test_transformer_jvm.py -v
+```
+
+Ожидаемый вывод: все 8 тестов `PASSED`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add skills/parquet-to-iceberg/transformers/jvm.py tests/test_transformer_jvm.py
+git commit -m "feat: implement java/scala spark + hive parquet→iceberg transformer"
+```
+
+---
+
 ## Task 7: Обновление зависимостей
 
 **Files:**
 - Create: `skills/parquet-to-iceberg/deps.py`
 - Create: `tests/test_deps.py`
 
-Модуль находит `requirements.txt` / `pyproject.toml` в проекте и добавляет `pyiceberg[sql-sqlite]`.
+Модуль находит `requirements.txt` / `pyproject.toml` / `pom.xml` / `build.gradle` в проекте и добавляет нужные Iceberg-зависимости:
+- **Python:** `pyiceberg[sql-sqlite]>=0.7.0`
+- **Maven:** `org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0`
+- **Gradle:** то же самое, через `implementation` или `compile`
 
 - [ ] **Step 1: Написать тест**
 
@@ -827,6 +1320,77 @@ def test_adds_pyiceberg_to_pyproject_toml(tmp_path):
 def test_no_deps_file_is_noop(tmp_path):
     # Should not raise
     update_dependencies(tmp_path)
+
+
+# ─── Maven (pom.xml) ───────────────────────────────────────────────────
+
+def test_adds_iceberg_to_pom_xml(tmp_path):
+    pom = tmp_path / "pom.xml"
+    pom.write_text('''<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example</groupId>
+    <artifactId>job</artifactId>
+    <version>1.0.0</version>
+    <dependencies>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_2.12</artifactId>
+            <version>3.5.0</version>
+        </dependency>
+    </dependencies>
+</project>
+''')
+    update_dependencies(tmp_path)
+    content = pom.read_text()
+    assert "iceberg-spark-runtime" in content
+    assert "org.apache.iceberg" in content
+    # Existing spark-sql dep preserved
+    assert "spark-sql_2.12" in content
+
+
+def test_does_not_duplicate_iceberg_in_pom(tmp_path):
+    pom = tmp_path / "pom.xml"
+    pom.write_text('''<project>
+    <dependencies>
+        <dependency>
+            <groupId>org.apache.iceberg</groupId>
+            <artifactId>iceberg-spark-runtime-3.5_2.12</artifactId>
+            <version>1.5.0</version>
+        </dependency>
+    </dependencies>
+</project>
+''')
+    update_dependencies(tmp_path)
+    assert pom.read_text().count("iceberg-spark-runtime") == 1
+
+
+# ─── Gradle (build.gradle) ─────────────────────────────────────────────
+
+def test_adds_iceberg_to_build_gradle(tmp_path):
+    gradle = tmp_path / "build.gradle"
+    gradle.write_text('''plugins {
+    id 'java'
+}
+repositories { mavenCentral() }
+dependencies {
+    implementation 'org.apache.spark:spark-sql_2.12:3.5.0'
+}
+''')
+    update_dependencies(tmp_path)
+    content = gradle.read_text()
+    assert "iceberg-spark-runtime" in content
+    assert "implementation" in content
+
+
+def test_does_not_duplicate_iceberg_in_gradle(tmp_path):
+    gradle = tmp_path / "build.gradle"
+    gradle.write_text('''dependencies {
+    implementation 'org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0'
+}
+''')
+    update_dependencies(tmp_path)
+    assert gradle.read_text().count("iceberg-spark-runtime") == 1
 ```
 
 - [ ] **Step 2: Запустить — убедиться что падает**
@@ -844,15 +1408,29 @@ from pathlib import Path
 
 PYICEBERG_REQ = 'pyiceberg[sql-sqlite]>=0.7.0'
 
+# Iceberg Spark runtime coordinates (matches Spark 3.5 + Scala 2.12)
+ICEBERG_GROUP = 'org.apache.iceberg'
+ICEBERG_ARTIFACT = 'iceberg-spark-runtime-3.5_2.12'
+ICEBERG_VERSION = '1.5.0'
+
 
 def update_dependencies(project_root: Path) -> None:
     req_file = project_root / "requirements.txt"
     pyproject = project_root / "pyproject.toml"
+    pom = project_root / "pom.xml"
+    gradle = project_root / "build.gradle"
+    gradle_kts = project_root / "build.gradle.kts"
 
     if req_file.exists():
         _update_requirements_txt(req_file)
-    elif pyproject.exists():
+    if pyproject.exists():
         _update_pyproject_toml(pyproject)
+    if pom.exists():
+        _update_pom_xml(pom)
+    if gradle.exists():
+        _update_build_gradle(gradle)
+    if gradle_kts.exists():
+        _update_build_gradle(gradle_kts)
 
 
 def _update_requirements_txt(path: Path) -> None:
@@ -866,13 +1444,52 @@ def _update_pyproject_toml(path: Path) -> None:
     content = path.read_text()
     if "pyiceberg" in content:
         return
-    # Append to dependencies list before closing bracket
     content = re.sub(
         r'(dependencies\s*=\s*\[)(.*?)(\])',
         lambda m: m.group(1) + m.group(2).rstrip() + f'\n  "{PYICEBERG_REQ}",\n' + m.group(3),
         content,
         flags=re.DOTALL,
     )
+    path.write_text(content)
+
+
+def _update_pom_xml(path: Path) -> None:
+    content = path.read_text()
+    if ICEBERG_ARTIFACT in content:
+        return
+    iceberg_dep = (
+        f'        <dependency>\n'
+        f'            <groupId>{ICEBERG_GROUP}</groupId>\n'
+        f'            <artifactId>{ICEBERG_ARTIFACT}</artifactId>\n'
+        f'            <version>{ICEBERG_VERSION}</version>\n'
+        f'        </dependency>\n'
+    )
+    # Insert before closing </dependencies>
+    if '</dependencies>' in content:
+        content = content.replace('</dependencies>', iceberg_dep + '    </dependencies>', 1)
+    else:
+        # No <dependencies> block — add one before </project>
+        block = f'    <dependencies>\n{iceberg_dep}    </dependencies>\n'
+        content = content.replace('</project>', block + '</project>', 1)
+    path.write_text(content)
+
+
+def _update_build_gradle(path: Path) -> None:
+    content = path.read_text()
+    if ICEBERG_ARTIFACT in content:
+        return
+    coordinate = f"'{ICEBERG_GROUP}:{ICEBERG_ARTIFACT}:{ICEBERG_VERSION}'"
+    line = f"    implementation {coordinate}\n"
+    # Insert inside dependencies { ... } block
+    if re.search(r'dependencies\s*\{', content):
+        content = re.sub(
+            r'(dependencies\s*\{)',
+            lambda m: m.group(1) + "\n" + line,
+            content,
+            count=1,
+        )
+    else:
+        content = content.rstrip() + f"\n\ndependencies {{\n{line}}}\n"
     path.write_text(content)
 ```
 
@@ -882,7 +1499,7 @@ def _update_pyproject_toml(path: Path) -> None:
 pytest tests/test_deps.py -v
 ```
 
-Ожидаемый вывод: все 4 теста `PASSED`.
+Ожидаемый вывод: все 8 тестов `PASSED` (Python ×4, Maven ×2, Gradle ×2).
 
 - [ ] **Step 5: Commit**
 
@@ -910,19 +1527,25 @@ import subprocess
 import sys
 from pathlib import Path
 
-FIXTURE = Path(__file__).parent / "fixtures" / "python-pandas"
+FIXTURES = Path(__file__).parent / "fixtures"
+PANDAS_FIXTURE = FIXTURES / "python-pandas"
+JAVA_FIXTURE = FIXTURES / "java-spark"
+HIVE_FIXTURE = FIXTURES / "java-hive"
+
+
+def _run_cli(project: Path, table: str = "events", namespace: str = "default") -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-m", "skills.parquet_to_iceberg.cli",
+         str(project), "--table", table, "--namespace", namespace],
+        capture_output=True, text=True,
+    )
 
 
 def test_converts_pandas_fixture(tmp_path):
-    # Copy fixture to tmp_path to avoid modifying original
     project = tmp_path / "project"
-    shutil.copytree(FIXTURE, project)
+    shutil.copytree(PANDAS_FIXTURE, project)
 
-    result = subprocess.run(
-        [sys.executable, "-m", "skills.parquet_to_iceberg.cli",
-         str(project), "--table", "events", "--namespace", "default"],
-        capture_output=True, text=True,
-    )
+    result = _run_cli(project)
     assert result.returncode == 0, result.stderr
 
     etl = (project / "src" / "etl.py").read_text()
@@ -934,15 +1557,45 @@ def test_converts_pandas_fixture(tmp_path):
     assert "pyiceberg" in req
 
 
+def test_converts_java_spark_fixture(tmp_path):
+    project = tmp_path / "project"
+    shutil.copytree(JAVA_FIXTURE, project)
+
+    result = _run_cli(project)
+    assert result.returncode == 0, result.stderr
+
+    java_src = (project / "src/main/java/com/example/EventsJob.java").read_text()
+    assert ".read().parquet(" not in java_src
+    assert ".write().mode(\"overwrite\").parquet(" not in java_src
+    assert 'format("iceberg")' in java_src
+    assert 'writeTo("default.events")' in java_src
+
+    pom = (project / "pom.xml").read_text()
+    assert "iceberg-spark-runtime" in pom
+
+
+def test_converts_java_hive_fixture(tmp_path):
+    project = tmp_path / "project"
+    shutil.copytree(HIVE_FIXTURE, project)
+
+    result = _run_cli(project)
+    assert result.returncode == 0, result.stderr
+
+    hive_src = (project / "src/main/java/com/example/HiveEtl.java").read_text()
+    assert "STORED AS PARQUET" not in hive_src
+    assert "USING iceberg" in hive_src
+    assert "saveAsTable" not in hive_src
+    assert 'writeTo("default.events")' in hive_src
+
+    pom = (project / "pom.xml").read_text()
+    assert "iceberg-spark-runtime" in pom
+
+
 def test_cli_prints_summary(tmp_path):
     project = tmp_path / "project"
-    shutil.copytree(FIXTURE, project)
+    shutil.copytree(PANDAS_FIXTURE, project)
 
-    result = subprocess.run(
-        [sys.executable, "-m", "skills.parquet_to_iceberg.cli",
-         str(project), "--table", "events", "--namespace", "default"],
-        capture_output=True, text=True,
-    )
+    result = _run_cli(project)
     assert "Converted" in result.stdout or "converted" in result.stdout
 ```
 
@@ -969,10 +1622,16 @@ from .deps import update_dependencies
 from .transformers.pandas import transform_pandas_file
 from .transformers.pyspark import transform_pyspark_file
 from .transformers.pyarrow import transform_pyarrow_file
+from .transformers.jvm import transform_jvm_file
 
 _PANDAS_TYPES = {"pandas_read", "pandas_write"}
 _PYSPARK_TYPES = {"pyspark_read", "pyspark_write"}
 _PYARROW_TYPES = {"pyarrow_read", "pyarrow_write"}
+_JVM_TYPES = {
+    "java_spark_read", "java_spark_write",
+    "scala_spark_read", "scala_spark_write",
+    "hive_create_parquet", "hive_save_as_table", "hive_insert_overwrite",
+}
 
 
 def convert_project(project_root: Path, *, table_name: str, namespace: str) -> int:
@@ -986,27 +1645,37 @@ def convert_project(project_root: Path, *, table_name: str, namespace: str) -> i
         files_by_type.setdefault(m.file, set()).add(m.pattern_type)
 
     converted = 0
-    for py_file, types in files_by_type.items():
-        source = py_file.read_text()
+    for src_file, types in files_by_type.items():
+        source = src_file.read_text()
         kw = {"table_name": table_name, "namespace": namespace}
+        suffix = src_file.suffix.lower()
 
-        if types & _PANDAS_TYPES:
-            source = transform_pandas_file(source, **kw)
-        if types & _PYSPARK_TYPES:
-            source = transform_pyspark_file(source, **kw)
-        if types & _PYARROW_TYPES:
-            source = transform_pyarrow_file(source, **kw)
+        if suffix == ".py":
+            if types & _PANDAS_TYPES:
+                source = transform_pandas_file(source, **kw)
+            if types & _PYSPARK_TYPES:
+                source = transform_pyspark_file(source, **kw)
+            if types & _PYARROW_TYPES:
+                source = transform_pyarrow_file(source, **kw)
+        elif suffix == ".java":
+            if types & _JVM_TYPES:
+                source = transform_jvm_file(source, language="java", **kw)
+        elif suffix == ".scala":
+            if types & _JVM_TYPES:
+                source = transform_jvm_file(source, language="scala", **kw)
+        else:
+            continue
 
-        py_file.write_text(source)
-        print(f"  Converted: {py_file.relative_to(project_root)}")
+        src_file.write_text(source)
+        print(f"  Converted: {src_file.relative_to(project_root)}")
         converted += 1
 
     update_dependencies(project_root)
     print(f"\nConverted {converted} file(s). Updated dependencies.")
     print("Next steps:")
-    print("  1. pip install pyiceberg[sql-sqlite]")
-    print("  2. Create Iceberg table schema (see pyiceberg docs)")
-    print("  3. Run your tests")
+    print("  Python: pip install pyiceberg[sql-sqlite]")
+    print("  JVM:    ensure iceberg-spark-runtime is on the classpath (added to pom.xml/build.gradle)")
+    print("  Create Iceberg table schema and run your tests")
     return 0
 
 
@@ -1067,8 +1736,8 @@ git commit -m "feat: add CLI entry point and integration tests"
 ```markdown
 ---
 name: parquet-to-iceberg
-description: Converts a Python project from Parquet read/write to Apache Iceberg tables
-trigger: "convert parquet" OR "migrate to iceberg" OR "parquet to iceberg"
+description: Converts a Python or Java/Scala project from Parquet (and Hive-parquet) read/write to Apache Iceberg tables
+trigger: "convert parquet" OR "migrate to iceberg" OR "parquet to iceberg" OR "migrate hive to iceberg"
 ---
 
 # Parquet → Iceberg Conversion Skill
@@ -1077,50 +1746,86 @@ trigger: "convert parquet" OR "migrate to iceberg" OR "parquet to iceberg"
 
 ## What This Skill Does
 
-Scans the project for Parquet read/write operations (pandas, PySpark, pyarrow) and replaces them
-with Apache Iceberg equivalents using pyiceberg. Updates project dependencies automatically.
+Scans the project for Parquet / Hive-parquet operations and replaces them with Apache Iceberg equivalents:
+
+- **Python:** pandas, PySpark, pyarrow → pyiceberg
+- **Java / Scala:** Spark Dataset API (`spark.read().parquet()`) → Iceberg Spark runtime (`spark.read().format("iceberg")`)
+- **Hive via SparkSQL:** `STORED AS PARQUET` / `saveAsTable` / `INSERT OVERWRITE TABLE` → Iceberg-backed tables (`USING iceberg`, `writeTo(...)`)
+
+Also updates project dependencies (`requirements.txt`, `pyproject.toml`, `pom.xml`, `build.gradle`).
 
 ## Step-by-Step Process
 
-### 1. Detect Parquet Usage
+### 1. Identify Project Type
 
-Run the detector to understand scope:
+Look for build files to determine stack:
+- `requirements.txt` / `pyproject.toml` → **Python**
+- `pom.xml` → **Java + Maven**
+- `build.gradle` / `build.gradle.kts` → **Java/Scala + Gradle**
+- `*.java` / `*.scala` files → JVM project
 
-\`\`\`bash
-python -m skills.parquet_to_iceberg.cli <project_path> --table <TABLE_NAME> --namespace <NAMESPACE> --dry-run
-\`\`\`
+The skill handles all of these automatically — the detector scans `.py`, `.java`, `.scala` files.
 
-If `--dry-run` is not yet implemented, read the source files manually and identify:
+### 2. Detect Parquet & Hive Usage
+
+Read source files and identify patterns. The skill looks for:
+
+**Python:**
 - `pd.read_parquet(...)` / `df.to_parquet(...)`
 - `spark.read.parquet(...)` / `df.write.parquet(...)`
 - `pq.read_table(...)` / `pq.write_table(...)`
 
-### 2. Ask the User for Iceberg Table Details
+**Java:**
+- `spark.read().parquet(...)` / `df.write().parquet(...)`
+- `df.write().saveAsTable("...")`
+- `spark.sql("CREATE TABLE ... STORED AS PARQUET")`
+- `spark.sql("INSERT OVERWRITE TABLE ...")`
+
+**Scala:**
+- `spark.read.parquet(...)` / `df.write.parquet(...)` (без скобок после `read`/`write`)
+
+### 3. Ask the User for Iceberg Table Details
 
 Before converting, ask:
 - **Table name** — what should the Iceberg table be called?
 - **Namespace** — default namespace is `"default"`
-- **Catalog type** — local SQLite (dev) or existing catalog (prod)?
+- **Catalog type** — local SQLite (dev), Hive Metastore, AWS Glue, REST?
+- **For JVM projects:** does the target Spark cluster already have `iceberg-spark-runtime` on the classpath, or should we add it?
 
-### 3. Run the Conversion
+### 4. Run the Conversion
 
 \`\`\`bash
 python -m skills.parquet_to_iceberg.cli <project_path> --table <TABLE_NAME> --namespace <NAMESPACE>
 \`\`\`
 
-### 4. Review and Fix Edge Cases
+### 5. Review and Fix Edge Cases
 
 After automated conversion, manually review:
-- Files with **multiple tables** (the tool assumes one table per project — split if needed)
-- **Schema definitions** — Iceberg requires explicit schema; extract from existing parquet files:
+
+- **Multiple tables** — the tool assumes one table per project; split and re-run per table if needed
+- **Schema definitions** — Iceberg requires explicit schema. Extract from existing parquet:
   \`\`\`python
   import pyarrow.parquet as pq
   schema = pq.read_schema("existing.parquet")
   \`\`\`
-- **Partitioning** — if original code used partitioned parquet, add Iceberg partition spec
+- **Partitioning** — `partitionBy("day")` is preserved as a `TODO` comment in the JVM transformer output. Add to the Iceberg partition spec manually:
+  \`\`\`sql
+  ALTER TABLE default.events ADD PARTITION FIELD day
+  \`\`\`
+- **Hive metastore catalog** — if the original project used Hive MetaStore, configure Iceberg's HiveCatalog:
+  \`\`\`
+  spark.sql.catalog.hive_prod = org.apache.iceberg.spark.SparkCatalog
+  spark.sql.catalog.hive_prod.type = hive
+  spark.sql.catalog.hive_prod.uri = thrift://metastore:9083
+  \`\`\`
+- **Existing Hive tables with data** — use Iceberg's `system.migrate` procedure to convert in place:
+  \`\`\`sql
+  CALL hive_prod.system.migrate('db.events')
+  \`\`\`
 
-### 5. Create the Iceberg Table
+### 6. Create the Iceberg Table
 
+**Python (pyiceberg):**
 \`\`\`python
 from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema
@@ -1135,40 +1840,94 @@ schema = Schema(
 catalog.create_table("default.events", schema=schema)
 \`\`\`
 
-### 6. Run Existing Tests
+**Java/Scala (Spark SQL):**
+\`\`\`sql
+CREATE TABLE default.events (
+  id BIGINT NOT NULL,
+  status STRING,
+  value DOUBLE
+) USING iceberg
+\`\`\`
 
+### 7. Run Existing Tests
+
+**Python:**
 \`\`\`bash
 pip install pyiceberg[sql-sqlite]
 pytest tests/ -v
 \`\`\`
 
-Fix any failures — common issues:
-- Test uses `tmp_path` for parquet file path but iceberg catalog uses fixed `iceberg.db` — inject catalog via fixture
-- Assertions on file existence (`assert Path("data.parquet").exists()`) — remove or replace
+**Java/Maven:**
+\`\`\`bash
+mvn test
+\`\`\`
 
-### 7. Commit
+**Scala/Gradle:**
+\`\`\`bash
+./gradlew test
+\`\`\`
+
+Common test failures:
+- Tests use `tmp_path` for parquet file path but Iceberg catalog uses a fixed URI — inject catalog via fixture
+- Assertions on file existence (`Path("data.parquet").exists()`) — replace with table existence checks
+
+### 8. Commit
 
 \`\`\`bash
 git add -A
 git commit -m "refactor: migrate parquet read/write to Apache Iceberg"
 \`\`\`
 
-## Conversion Reference
+## Conversion Reference — Python
 
 | Before (Parquet) | After (Iceberg) |
 |---|---|
-| `pd.read_parquet(path)` | `catalog.load_table(ns, name).scan().to_pandas()` |
+| `pd.read_parquet(path)` | `catalog.load_table((ns, name)).scan().to_pandas()` |
 | `df.to_parquet(path)` | `tbl.overwrite(df)` |
 | `spark.read.parquet(path)` | `spark.table("ns.name")` |
 | `df.write.parquet(path)` | `df.writeTo("ns.name").overwritePartitions()` |
 | `pq.read_table(path)` | `tbl.scan().to_arrow()` |
 | `pq.write_table(table, path)` | `tbl.overwrite(table)` |
 
+## Conversion Reference — Java/Scala Spark
+
+| Before (Java) | After (Iceberg) |
+|---|---|
+| `spark.read().parquet("path")` | `spark.read().format("iceberg").load("ns.table")` |
+| `df.write().mode("overwrite").parquet("path")` | `df.writeTo("ns.table").overwritePartitions()` |
+| `df.write().saveAsTable("t")` | `df.writeTo("ns.t").createOrReplace()` |
+| `df.write().partitionBy("day").parquet(...)` | `df.writeTo("ns.t").overwritePartitions()` *(+ TODO comment for partition spec)* |
+
+| Before (Scala) | After (Iceberg) |
+|---|---|
+| `spark.read.parquet("path")` | `spark.read.format("iceberg").load("ns.table")` |
+| `df.write.mode("overwrite").parquet("path")` | `df.writeTo("ns.table").overwritePartitions()` |
+
+## Conversion Reference — Hive / SparkSQL
+
+| Before | After |
+|---|---|
+| `"CREATE TABLE t (...) STORED AS PARQUET"` | `"CREATE TABLE t (...) USING iceberg"` |
+| `df.write().saveAsTable("t")` | `df.writeTo("ns.t").createOrReplace()` |
+| `"INSERT OVERWRITE TABLE t SELECT ..."` | *(no change — Spark handles Iceberg tables via the same SQL, assuming catalog is configured)* |
+| Existing Hive table with data | `CALL catalog.system.migrate('db.t')` — manual step |
+
+## Dependencies Added
+
+| Ecosystem | File | Dependency |
+|---|---|---|
+| Python | `requirements.txt` / `pyproject.toml` | `pyiceberg[sql-sqlite]>=0.7.0` |
+| Maven | `pom.xml` | `org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0` |
+| Gradle | `build.gradle` | `implementation 'org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0'` |
+
 ## Known Limitations
 
-- Multi-table projects require manual splitting by table
-- Streaming writes (Kafka → Parquet) are out of scope
-- Cloud catalog configs (Glue, Nessie, Hive) need manual setup — this tool generates SQLite dev config
+- **Multi-table projects** require manual splitting by table (run CLI per table)
+- **Streaming writes** (Kafka → Parquet, Structured Streaming to parquet sinks) are out of scope
+- **Cloud catalog configs** (Glue, Nessie, REST) need manual setup — this tool generates SQLite dev config for Python, and leaves JVM catalog config untouched
+- **Hive table data migration** — the tool rewrites *code* but does not migrate existing parquet data; use `CALL system.migrate(...)` for in-place migration or `CTAS` for copy
+- **Schema inference** — partition specs are not automatically derived; `partitionBy(...)` becomes a `TODO` comment for the JVM transformer
+- **Scala Scala 2.13 / Spark 3.4** — the generated Maven/Gradle coordinates target Spark 3.5 + Scala 2.12; adjust manually for other versions
 ```
 
 - [ ] **Step 2: Commit**
@@ -1232,4 +1991,4 @@ git commit -m "chore: add pyproject.toml packaging"
 
 ---
 
-*Self-review: все требования покрыты — детектор (Task 3), трансформеры для pandas/PySpark/pyarrow (Tasks 4-6), deps updater (Task 7), CLI (Task 8), SKILL.md (Task 9). Нет плейсхолдеров. Типы и имена функций консистентны между задачами.*
+*Self-review: все требования покрыты — фикстуры Python/Java/Scala/Hive (Tasks 1-2), детектор для `.py` + `.java` + `.scala` с Hive-паттернами (Task 3), Python-трансформеры pandas/PySpark/pyarrow (Tasks 4-6), JVM-трансформер Java/Scala Spark + Hive (Task 6.5), deps updater для requirements.txt / pyproject.toml / pom.xml / build.gradle (Task 7), CLI с диспатчем по расширению файла (Task 8), интеграционные тесты против pandas/java-spark/java-hive фикстур, SKILL.md с таблицами соответствий для Python/JVM/Hive (Task 9). Нет плейсхолдеров. Имена функций консистентны: `transform_jvm_file(source, language=..., table_name=..., namespace=...)` используется и в тестах, и в CLI.*
