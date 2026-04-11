@@ -6,6 +6,18 @@ _CATALOG_TPL = (
     'tbl = catalog.load_table(("{namespace}", "{table_name}"))\n'
 )
 
+# Classic pq API — covers parquet and orc (orc module aliased as `orc` or `po`)
+_READ_RE = re.compile(r"(?:pq|orc|po)\.read_table\s*\(")
+_WRITE_RE = re.compile(r"(?:pq|orc|po)\.write_table\s*\(")
+
+# Dataset API and ParquetFile/ParquetDataset — warn only
+_DATASET_RE = re.compile(
+    r"pq\.ParquetFile\s*\("
+    r"|pq\.ParquetDataset\s*\("
+    r"|(?:pa|pyarrow)\.dataset\.dataset\s*\("
+    r"|(?:pa|pyarrow)\.dataset\.write_dataset\s*\("
+)
+
 
 def transform_pyarrow_file(source: str, *, table_name: str, namespace: str) -> str:
     lines = source.splitlines(keepends=True)
@@ -13,6 +25,7 @@ def transform_pyarrow_file(source: str, *, table_name: str, namespace: str) -> s
     catalog_injected = False
     import_injected = False
     last_import_idx = -1
+    fqn = f"{namespace}.{table_name}"
 
     for i, line in enumerate(lines):
         if re.match(r"^(?:import |from )\S", line):
@@ -29,24 +42,32 @@ def transform_pyarrow_file(source: str, *, table_name: str, namespace: str) -> s
             import_injected = True
             continue
 
-        # pq.read_table(path) → tbl.scan().to_arrow()
-        if re.search(r"pq\.read_table\s*\(", stripped):
+        # Dataset / ParquetFile / ParquetDataset — warn only
+        if _DATASET_RE.search(stripped):
+            out.append(
+                f"{sp}# TODO(iceberg): pyarrow dataset/ParquetFile API — "
+                f"rewrite to `catalog.load_table(({namespace!r}, {table_name!r})).scan().to_arrow()` "
+                f"or `tbl.overwrite(table)` depending on direction.\n"
+            )
+            out.append(line)
+            continue
+
+        if _READ_RE.search(stripped):
             if not catalog_injected:
                 for cl in _CATALOG_TPL.format(namespace=namespace, table_name=table_name).splitlines(keepends=True):
                     out.append(sp + cl)
                 catalog_injected = True
-            var_match = re.match(r"(\s*\w+\s*=\s*)pq\.read_table\s*\(.*\)", stripped)
+            var_match = re.match(r"(\s*\w+\s*=\s*)(?:pq|orc|po)\.read_table\s*\(.*\)", stripped)
             var = var_match.group(1).lstrip() if var_match else ""
             out.append(f"{sp}{var}tbl.scan().to_arrow()\n")
             continue
 
-        # pq.write_table(table, path) → tbl.overwrite(table)
-        if re.search(r"pq\.write_table\s*\(", stripped):
+        if _WRITE_RE.search(stripped):
             if not catalog_injected:
                 for cl in _CATALOG_TPL.format(namespace=namespace, table_name=table_name).splitlines(keepends=True):
                     out.append(sp + cl)
                 catalog_injected = True
-            obj_match = re.search(r"pq\.write_table\s*\(\s*(\w+)\s*,", stripped)
+            obj_match = re.search(r"(?:pq|orc|po)\.write_table\s*\(\s*(\w+)\s*,", stripped)
             obj = obj_match.group(1) if obj_match else "table"
             out.append(f"{sp}tbl.overwrite({obj})\n")
             continue

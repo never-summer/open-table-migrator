@@ -1,20 +1,21 @@
 ---
 name: parquet-to-iceberg
-description: Converts a Python or Java/Scala project from Parquet (and Hive-parquet) read/write to Apache Iceberg tables
-trigger: "convert parquet" OR "migrate to iceberg" OR "parquet to iceberg" OR "migrate hive to iceberg"
+description: Converts a Python or Java/Scala project from Parquet/ORC (including Hive and generic format() idioms) read/write to Apache Iceberg tables
+trigger: "convert parquet" OR "migrate to iceberg" OR "parquet to iceberg" OR "migrate hive to iceberg" OR "convert orc" OR "migrate orc to iceberg"
 ---
 
-# Parquet → Iceberg Conversion Skill
+# Parquet/ORC → Iceberg Conversion Skill
 
 **Announce at start:** "I'm using the parquet-to-iceberg skill to convert this project."
 
 ## What This Skill Does
 
-Scans the project for Parquet / Hive-parquet operations and replaces them with Apache Iceberg equivalents:
+Scans the project for Parquet and ORC operations (Hive DDL, Spark Dataset API, generic `format(...)` calls) and replaces them with Apache Iceberg equivalents:
 
-- **Python:** pandas, PySpark, pyarrow → pyiceberg
-- **Java / Scala:** Spark Dataset API (`spark.read().parquet()`) → Iceberg Spark runtime (`spark.read().format("iceberg")`)
-- **Hive via SparkSQL:** `STORED AS PARQUET` / `saveAsTable` / `INSERT OVERWRITE TABLE` → Iceberg-backed tables (`USING iceberg`, `writeTo(...)`)
+- **Python:** pandas, PySpark (batch + generic format + streaming warn), pyarrow (classic + dataset warn) → pyiceberg
+- **Java / Scala:** Spark Dataset API `spark.read().parquet|orc()` and `spark.read().format("parquet"|"orc").load()` → Iceberg Spark runtime (`format("iceberg")`)
+- **Hive via SparkSQL:** `STORED AS PARQUET|ORC`, `USING parquet|orc`, `saveAsTable`, `INSERT INTO|OVERWRITE TABLE` → Iceberg-backed tables (`USING iceberg`, `writeTo(...)`)
+- **Structured Streaming** and **pyarrow dataset/ParquetFile** are *detected* and left with `TODO(iceberg)` comments for manual rewrite.
 
 Also updates project dependencies (`requirements.txt`, `pyproject.toml`, `pom.xml`, `build.gradle`).
 
@@ -30,23 +31,30 @@ Look for build files to determine stack:
 
 The skill handles all of these automatically — the detector scans `.py`, `.java`, `.scala` files.
 
-### 2. Detect Parquet & Hive Usage
+### 2. Detect Parquet / ORC / Hive Usage
 
-Read source files and identify patterns. The skill looks for:
+Read source files and identify patterns. The skill scans for **both Parquet and ORC** and covers the Spark/pandas/pyarrow idioms below.
 
 **Python:**
-- `pd.read_parquet(...)` / `df.to_parquet(...)`
-- `spark.read.parquet(...)` / `df.write.parquet(...)`
-- `pq.read_table(...)` / `pq.write_table(...)`
+- pandas: `pd.read_parquet(...)` / `pd.read_orc(...)` / `.to_parquet(...)` / `.to_orc(...)`
+- PySpark batch: `spark.read.parquet|orc(...)` / `df.write.parquet|orc(...)`
+- PySpark generic: `spark.read.format("parquet"|"orc").load(...)` / `df.write.format(...).save(...)`
+- PySpark streaming *(warn-only)*: `readStream.parquet|orc|format(...)`, `writeStream...`
+- pyarrow classic: `pq.read_table(...)` / `pq.write_table(...)`
+- pyarrow ORC: `orc.read_table(...)` / `orc.write_table(...)`
+- pyarrow dataset *(warn-only)*: `pq.ParquetFile`, `pq.ParquetDataset`, `pa.dataset.dataset`, `pa.dataset.write_dataset`
+- SparkSQL via `spark.sql(...)`: `STORED AS PARQUET|ORC`, `USING parquet|orc`, `INSERT INTO|OVERWRITE TABLE`
 
 **Java:**
-- `spark.read().parquet(...)` / `df.write().parquet(...)`
+- Batch: `spark.read().parquet|orc(...)` / `df.write()...parquet|orc(...)`
+- Generic: `spark.read().format("parquet"|"orc").load(...)` / `df.write()...format(...).save(...)`
+- Streaming *(warn-only)*: `readStream()....`, `writeStream()....`
 - `df.write().saveAsTable("...")`
-- `spark.sql("CREATE TABLE ... STORED AS PARQUET")`
-- `spark.sql("INSERT OVERWRITE TABLE ...")`
+- `spark.sql("CREATE [EXTERNAL] TABLE ... STORED AS PARQUET|ORC")`
+- `spark.sql("CREATE TABLE ... USING parquet|orc")`
+- `spark.sql("INSERT INTO|OVERWRITE TABLE ...")`
 
-**Scala:**
-- `spark.read.parquet(...)` / `df.write.parquet(...)` (без скобок после `read`/`write`)
+**Scala:** same as Java but with the parens-less `.read.parquet` / `.write.parquet` idiom.
 
 ### 3. Ask the User for Iceberg Table Details
 
@@ -146,34 +154,45 @@ git commit -m "refactor: migrate parquet read/write to Apache Iceberg"
 
 | Before (Parquet) | After (Iceberg) |
 |---|---|
-| `pd.read_parquet(path)` | `catalog.load_table((ns, name)).scan().to_pandas()` |
-| `df.to_parquet(path)` | `tbl.overwrite(df)` |
-| `spark.read.parquet(path)` | `spark.table("ns.name")` |
-| `df.write.parquet(path)` | `df.writeTo("ns.name").overwritePartitions()` |
-| `pq.read_table(path)` | `tbl.scan().to_arrow()` |
-| `pq.write_table(table, path)` | `tbl.overwrite(table)` |
+| `pd.read_parquet(path)` / `pd.read_orc(path)` | `catalog.load_table((ns, name)).scan().to_pandas()` |
+| `df.to_parquet(path)` / `df.to_orc(path)` | `tbl.overwrite(df)` |
+| `spark.read.parquet(path)` / `.orc(path)` | `spark.table("ns.name")` |
+| `spark.read.format("parquet"\|"orc").load(path)` | `spark.table("ns.name")` |
+| `df.write.parquet(path)` / `.orc(path)` | `df.writeTo("ns.name").overwritePartitions()` |
+| `df.write.format("parquet"\|"orc").save(path)` | `df.writeTo("ns.name").overwritePartitions()` |
+| `pq.read_table(path)` / `orc.read_table(path)` | `tbl.scan().to_arrow()` |
+| `pq.write_table(table, path)` / `orc.write_table(...)` | `tbl.overwrite(table)` |
+| `pq.ParquetFile` / `pq.ParquetDataset` / `pa.dataset.*` | *(TODO comment — rewrite manually)* |
+| `spark.readStream.parquet/orc/format(...)` | *(TODO comment — manual migration)* |
 
 ## Conversion Reference — Java/Scala Spark
 
 | Before (Java) | After (Iceberg) |
 |---|---|
-| `spark.read().parquet("path")` | `spark.read().format("iceberg").load("ns.table")` |
-| `df.write().mode("overwrite").parquet("path")` | `df.writeTo("ns.table").overwritePartitions()` |
+| `spark.read().parquet("p")` / `.orc("p")` | `spark.read().format("iceberg").load("ns.table")` |
+| `spark.read().format("parquet"\|"orc").load("p")` | `spark.read().format("iceberg").load("ns.table")` |
+| `df.write().mode("overwrite").parquet("p")` / `.orc("p")` | `df.writeTo("ns.table").overwritePartitions()` |
+| `df.write()...format("parquet"\|"orc").save("p")` | `df.writeTo("ns.table").overwritePartitions()` |
 | `df.write().saveAsTable("t")` | `df.writeTo("ns.t").createOrReplace()` |
 | `df.write().partitionBy("day").parquet(...)` | `df.writeTo("ns.t").overwritePartitions()` *(+ TODO comment for partition spec)* |
+| `spark.readStream()....parquet\|orc\|format(...)` | *(TODO comment — manual migration)* |
 
 | Before (Scala) | After (Iceberg) |
 |---|---|
-| `spark.read.parquet("path")` | `spark.read.format("iceberg").load("ns.table")` |
-| `df.write.mode("overwrite").parquet("path")` | `df.writeTo("ns.table").overwritePartitions()` |
+| `spark.read.parquet("p")` / `.orc("p")` | `spark.read.format("iceberg").load("ns.table")` |
+| `spark.read.format("parquet"\|"orc").load("p")` | `spark.read.format("iceberg").load("ns.table")` |
+| `df.write.mode("overwrite").parquet("p")` / `.orc("p")` | `df.writeTo("ns.table").overwritePartitions()` |
+| `df.write.format("parquet"\|"orc").save("p")` | `df.writeTo("ns.table").overwritePartitions()` |
 
 ## Conversion Reference — Hive / SparkSQL
 
 | Before | After |
 |---|---|
-| `"CREATE TABLE t (...) STORED AS PARQUET"` | `"CREATE TABLE t (...) USING iceberg"` |
+| `"CREATE TABLE t (...) STORED AS PARQUET\|ORC"` | `"CREATE TABLE t (...) USING iceberg"` |
+| `"CREATE [EXTERNAL] TABLE t (...) STORED AS PARQUET LOCATION '...'"` | `"CREATE TABLE t (...) USING iceberg LOCATION '...'"` *(review LOCATION semantics manually)* |
+| `"CREATE TABLE t (...) USING parquet\|orc"` | `"CREATE TABLE t (...) USING iceberg"` |
 | `df.write().saveAsTable("t")` | `df.writeTo("ns.t").createOrReplace()` |
-| `"INSERT OVERWRITE TABLE t SELECT ..."` | *(no change — Spark handles Iceberg tables via the same SQL, assuming catalog is configured)* |
+| `"INSERT INTO TABLE t ..."` / `"INSERT OVERWRITE TABLE t ..."` | *(no change — Spark handles Iceberg tables via the same SQL, assuming catalog is configured)* |
 | Existing Hive table with data | `CALL catalog.system.migrate('db.t')` — manual step |
 
 ## Dependencies Added
@@ -187,8 +206,12 @@ git commit -m "refactor: migrate parquet read/write to Apache Iceberg"
 ## Known Limitations
 
 - **Multi-table projects** require manual splitting by table (run CLI per table)
-- **Streaming writes** (Kafka → Parquet, Structured Streaming to parquet sinks) are out of scope
+- **Structured Streaming** (readStream/writeStream with parquet/orc sinks) is **detected but not rewritten** — the transformer inserts a `TODO(iceberg)` comment. Migrate manually using `.format("iceberg")` + `writeStream.toTable("ns.t")` / `.option("path", ...)`.
+- **pyarrow dataset API** (`ParquetFile`, `ParquetDataset`, `pa.dataset.*`) is also warn-only — rewrite to `catalog.load_table(...).scan().to_arrow()` by hand.
 - **Cloud catalog configs** (Glue, Nessie, REST) need manual setup — this tool generates SQLite dev config for Python, and leaves JVM catalog config untouched
-- **Hive table data migration** — the tool rewrites *code* but does not migrate existing parquet data; use `CALL system.migrate(...)` for in-place migration or `CTAS` for copy
+- **Hive table data migration** — the tool rewrites *code* but does not migrate existing parquet/ORC data; use `CALL system.migrate(...)` for in-place migration or `CTAS` for copy
 - **Schema inference** — partition specs are not automatically derived; `partitionBy(...)` becomes a `TODO` comment for the JVM transformer
 - **Scala 2.13 / Spark 3.4** — the generated Maven/Gradle coordinates target Spark 3.5 + Scala 2.12; adjust manually for other versions
+- **`LOCATION` clause** on `CREATE EXTERNAL TABLE` — rewritten to `USING iceberg LOCATION ...` but Iceberg's LOCATION semantics differ from Hive's; review manually.
+- **INSERT INTO / OVERWRITE** — detected but intentionally not rewritten (same SQL works on Iceberg tables). Reported only so you know the file is touching table data.
+- **False positives** — `INSERT INTO`, `saveAsTable`, and `USING parquet` regexes match *any* table by that pattern, not just the table you're migrating. Use `filter_matches` to scope if a project touches multiple tables.

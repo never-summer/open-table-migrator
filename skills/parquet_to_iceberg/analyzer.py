@@ -4,15 +4,50 @@ from .detector import PatternMatch
 
 
 _READ_TYPES = {
-    "pandas_read", "pyspark_read", "pyarrow_read",
-    "java_spark_read", "scala_spark_read",
+    # Python
+    "pandas_read", "pandas_orc_read",
+    "pyspark_read", "pyspark_orc_read", "pyspark_read_fmt",
+    "pyspark_stream_read", "pyspark_stream_read_fmt",
+    "pyarrow_read", "pyarrow_orc_read",
+    "pyarrow_parquet_file", "pyarrow_parquet_dataset", "pyarrow_dataset_read",
+    # Java
+    "java_spark_read", "java_spark_orc_read", "java_spark_read_fmt",
+    "java_spark_stream_read", "java_spark_stream_read_fmt",
+    # Scala
+    "scala_spark_read", "scala_spark_orc_read", "scala_spark_read_fmt",
+    "scala_spark_stream_read", "scala_spark_stream_read_fmt",
 }
 _WRITE_TYPES = {
-    "pandas_write", "pyspark_write", "pyarrow_write",
-    "java_spark_write", "scala_spark_write",
-    "hive_save_as_table", "hive_insert_overwrite",
+    # Python
+    "pandas_write", "pandas_orc_write",
+    "pyspark_write", "pyspark_orc_write", "pyspark_write_fmt",
+    "pyspark_stream_write", "pyspark_stream_write_fmt",
+    "pyarrow_write", "pyarrow_orc_write", "pyarrow_dataset_write",
+    # Java
+    "java_spark_write", "java_spark_orc_write", "java_spark_write_fmt",
+    "java_spark_stream_write", "java_spark_stream_write_fmt",
+    # Scala
+    "scala_spark_write", "scala_spark_orc_write", "scala_spark_write_fmt",
+    "scala_spark_stream_write", "scala_spark_stream_write_fmt",
+    # Hive/SQL DML + API
+    "hive_save_as_table", "hive_insert_overwrite", "hive_insert_into",
 }
-_SCHEMA_TYPES = {"hive_create_parquet"}
+_SCHEMA_TYPES = {
+    "hive_create_parquet", "hive_create_orc",
+    "sql_using_parquet", "sql_using_orc",
+}
+
+# Patterns for which transformers only emit a TODO comment (not a full rewrite)
+_WARN_ONLY_TYPES = {
+    "pyspark_stream_read", "pyspark_stream_read_fmt",
+    "pyspark_stream_write", "pyspark_stream_write_fmt",
+    "java_spark_stream_read", "java_spark_stream_read_fmt",
+    "java_spark_stream_write", "java_spark_stream_write_fmt",
+    "scala_spark_stream_read", "scala_spark_stream_read_fmt",
+    "scala_spark_stream_write", "scala_spark_stream_write_fmt",
+    "pyarrow_parquet_file", "pyarrow_parquet_dataset",
+    "pyarrow_dataset_read", "pyarrow_dataset_write",
+}
 
 
 def direction_of(pattern_type: str) -> str:
@@ -23,6 +58,10 @@ def direction_of(pattern_type: str) -> str:
     if pattern_type in _SCHEMA_TYPES:
         return "schema"
     return "unknown"
+
+
+def is_warn_only(pattern_type: str) -> bool:
+    return pattern_type in _WARN_ONLY_TYPES
 
 
 @dataclass
@@ -57,10 +96,9 @@ def format_report(report: Report, *, project_root: Path) -> str:
         return "No Parquet / Hive usage found."
 
     lines: list[str] = []
-    lines.append(f"Found {report.total} Parquet operation(s) across {len(report.by_file)} file(s):")
+    lines.append(f"Found {report.total} Parquet/ORC operation(s) across {len(report.by_file)} file(s):")
     lines.append("")
 
-    # Summary by direction
     lines.append("By direction:")
     for d in ("read", "write", "schema"):
         count = len(report.by_direction.get(d, []))
@@ -68,13 +106,12 @@ def format_report(report: Report, *, project_root: Path) -> str:
             lines.append(f"  {d:7s}: {count}")
     lines.append("")
 
-    # Summary by pattern type
     lines.append("By pattern type:")
     for ptype in sorted(report.by_pattern_type):
-        lines.append(f"  {ptype:25s}: {len(report.by_pattern_type[ptype])}")
+        marker = "  (warn-only)" if is_warn_only(ptype) else ""
+        lines.append(f"  {ptype:28s}: {len(report.by_pattern_type[ptype])}{marker}")
     lines.append("")
 
-    # Per-file listing
     lines.append("Per-file breakdown:")
     for file in sorted(report.by_file):
         try:
@@ -83,6 +120,6 @@ def format_report(report: Report, *, project_root: Path) -> str:
             rel = file
         lines.append(f"  {rel}:")
         for m in report.by_file[file]:
-            lines.append(f"    {m.pattern_type:25s} ({direction_of(m.pattern_type)}) line {m.line}:{m.line}")
+            lines.append(f"    {m.pattern_type:28s} ({direction_of(m.pattern_type)}) line {m.line}:{m.line}")
             lines.append(f"      {m.original_code}")
     return "\n".join(lines)

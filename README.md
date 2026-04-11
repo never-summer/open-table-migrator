@@ -15,9 +15,10 @@ A Claude Code **skill** and **subagent** that migrate Python, Java, and Scala pr
 
 ## What it converts
 
-**Python** — pandas, PySpark, pyarrow → pyiceberg
-**JVM** — Java/Scala Spark Dataset API → Iceberg Spark runtime
-**Hive SparkSQL** — `STORED AS PARQUET` / `saveAsTable` → `USING iceberg` / `writeTo(...)`
+- **Python** — pandas, PySpark, pyarrow (incl. ORC variants) → pyiceberg
+- **JVM** — Java/Scala Spark Dataset API (`.parquet`/`.orc`/`.format("parquet"|"orc")`) → Iceberg Spark runtime
+- **Hive SparkSQL** — `STORED AS PARQUET|ORC`, `USING parquet|orc`, `saveAsTable`, `INSERT INTO|OVERWRITE TABLE` → Iceberg-backed tables
+- **Warn-only detection** — Structured Streaming sinks and pyarrow `dataset`/`ParquetFile`/`ParquetDataset` are flagged with `TODO(iceberg)` comments for manual rewrite.
 
 See the [full conversion reference](skills/parquet_to_iceberg/SKILL.md#conversion-reference--python) in SKILL.md.
 
