@@ -5,7 +5,7 @@ from .detector import PatternMatch
 
 
 _READ_TYPES = {
-    # Python
+    # Python — parquet/orc
     "pandas_read", "pandas_orc_read",
     "pyspark_read", "pyspark_orc_read", "pyspark_read_fmt",
     "pyspark_stream_read", "pyspark_stream_read_fmt",
@@ -17,9 +17,21 @@ _READ_TYPES = {
     # Scala
     "scala_spark_read", "scala_spark_orc_read", "scala_spark_read_fmt",
     "scala_spark_stream_read", "scala_spark_stream_read_fmt",
+    # Broad I/O — reads
+    "pandas_csv_read", "pandas_json_read", "pandas_excel_read",
+    "pyspark_csv_read", "pyspark_json_read", "pyspark_text_read",
+    "pyspark_csv_read_fmt", "pyspark_json_read_fmt", "pyspark_avro_read_fmt",
+    "pyspark_delta_read_fmt", "pyspark_text_read_fmt", "pyspark_jdbc_read_fmt",
+    "pyspark_jdbc_read",
+    "jvm_csv_read", "jvm_json_read", "jvm_text_read",
+    "jvm_csv_read_fmt", "jvm_json_read_fmt", "jvm_avro_read_fmt",
+    "jvm_delta_read_fmt", "jvm_text_read_fmt", "jvm_jdbc_read_fmt",
+    "jvm_jdbc_read",
+    "python_csv_reader",
+    "spark_table_read",
 }
 _WRITE_TYPES = {
-    # Python
+    # Python — parquet/orc
     "pandas_write", "pandas_orc_write",
     "pyspark_write", "pyspark_orc_write", "pyspark_write_fmt",
     "pyspark_stream_write", "pyspark_stream_write_fmt",
@@ -32,11 +44,21 @@ _WRITE_TYPES = {
     "scala_spark_stream_write", "scala_spark_stream_write_fmt",
     # Hive/SQL DML + API
     "hive_save_as_table", "hive_insert_overwrite", "hive_insert_into",
+    # Broad I/O — writes
+    "pandas_csv_write", "pandas_json_write", "pandas_excel_write",
+    "pyspark_csv_write", "pyspark_json_write", "pyspark_text_write",
+    "pyspark_csv_write_fmt", "pyspark_json_write_fmt", "pyspark_avro_write_fmt",
+    "pyspark_delta_write_fmt", "pyspark_text_write_fmt", "pyspark_jdbc_write_fmt",
+    "jvm_csv_write", "jvm_json_write", "jvm_text_write",
+    "jvm_csv_write_fmt", "jvm_json_write_fmt", "jvm_avro_write_fmt",
+    "jvm_delta_write_fmt", "jvm_text_write_fmt", "jvm_jdbc_write_fmt",
+    "python_csv_writer", "java_file_writer",
 }
 _SCHEMA_TYPES = {
     "hive_create_parquet", "hive_create_orc",
     "sql_using_parquet", "sql_using_orc",
 }
+
 
 # Patterns for which transformers only emit a TODO comment (not a full rewrite)
 _WARN_ONLY_TYPES = {
@@ -63,6 +85,95 @@ def direction_of(pattern_type: str) -> str:
 
 def is_warn_only(pattern_type: str) -> bool:
     return pattern_type in _WARN_ONLY_TYPES
+
+
+_PARQUET_ORC_PREFIXES = (
+    "pandas_read", "pandas_write", "pandas_orc",
+    "pyspark_read", "pyspark_write", "pyspark_orc", "pyspark_stream",
+    "pyarrow_read", "pyarrow_write", "pyarrow_orc", "pyarrow_parquet", "pyarrow_dataset",
+    "java_spark_read", "java_spark_write", "java_spark_orc", "java_spark_stream",
+    "scala_spark_read", "scala_spark_write", "scala_spark_orc", "scala_spark_stream",
+    "hive_", "sql_using_",
+)
+
+
+def is_migration_candidate(pattern_type: str) -> bool:
+    """True if this pattern type is a parquet/orc operation (migration target)."""
+    return any(pattern_type.startswith(p) for p in _PARQUET_ORC_PREFIXES)
+
+
+# ─── Deduped operation sites ─────────────────────────────────────────
+
+@dataclass
+class OperationSite:
+    """A single logical read/write site — deduped across overlapping / adjacent
+    detector hits (e.g. ``scala_spark_write_fmt`` + ``hive_save_as_table`` on
+    the same chain).
+    """
+    file: Path
+    start_line: int
+    end_line: int
+    direction: str
+    subject: str | None
+    path_arg: str | None
+    summary: str
+    pattern_types: list[str]
+    matches: list[PatternMatch]
+
+
+def dedup_matches(matches: list[PatternMatch]) -> list[OperationSite]:
+    """Merge detector hits with overlapping or *adjacent* line ranges within
+    the same file into single ``OperationSite`` objects.
+    """
+    from .extract import extract_subject, summarize_operation
+
+    # Group by file, sort by start line.
+    by_file: dict[Path, list[PatternMatch]] = {}
+    for m in matches:
+        by_file.setdefault(m.file, []).append(m)
+
+    sites: list[OperationSite] = []
+    for f, file_matches in sorted(by_file.items(), key=lambda kv: kv[0]):
+        file_matches.sort(key=lambda m: (m.line, -(m.end_line or m.line)))
+        groups: list[list[PatternMatch]] = []
+        for m in file_matches:
+            end = m.end_line or m.line
+            if groups:
+                prev = groups[-1]
+                prev_end = max(pm.end_line or pm.line for pm in prev)
+                prev_start = min(pm.line for pm in prev)
+                # Merge if overlapping OR adjacent (end + 1 >= start)
+                if m.line <= prev_end + 1:
+                    groups[-1].append(m)
+                    continue
+            groups.append([m])
+
+        for group in groups:
+            # Pick the most informative match: prefer one with a path_arg,
+            # then longest original_code.
+            best = max(group, key=lambda m: (m.path_arg is not None, len(m.original_code)))
+            subj = extract_subject(best.original_code)
+            # If subject still None, try other matches in group
+            if subj is None:
+                for gm in group:
+                    subj = extract_subject(gm.original_code)
+                    if subj:
+                        break
+            summary = summarize_operation(best.original_code, best.pattern_type, best.path_arg, subject_override=subj)
+            start = min(gm.line for gm in group)
+            end = max(gm.end_line or gm.line for gm in group)
+            sites.append(OperationSite(
+                file=f,
+                start_line=start,
+                end_line=end,
+                direction=direction_of(best.pattern_type),
+                subject=subj,
+                path_arg=best.path_arg or next((gm.path_arg for gm in group if gm.path_arg), None),
+                summary=summary,
+                pattern_types=sorted(set(gm.pattern_type for gm in group)),
+                matches=group,
+            ))
+    return sites
 
 
 @dataclass

@@ -118,30 +118,114 @@ _HIVE_PATTERNS: list[tuple[str, str]] = [
     ("hive_save_as_table",      r"\.saveAsTable\s*\("),
 ]
 
+# ─── Broad I/O patterns (CSV, JSON, Avro, Delta, text, JDBC, etc.) ───
+
+_IO_EXTRA_PY: list[tuple[str, str]] = [
+    # pandas CSV/JSON/Excel
+    ("pandas_csv_read",     r"pd\.read_csv\s*\("),
+    ("pandas_csv_write",    r"\.to_csv\s*\("),
+    ("pandas_json_read",    r"pd\.read_json\s*\("),
+    ("pandas_json_write",   r"\.to_json\s*\("),
+    ("pandas_excel_read",   r"pd\.read_excel\s*\("),
+    ("pandas_excel_write",  r"\.to_excel\s*\("),
+
+    # PySpark CSV/JSON/text/Avro/Delta
+    ("pyspark_csv_read",    r"\.read\.csv\s*\("),
+    ("pyspark_csv_write",   r"\.write(?:\.\w+\([^)]*\))*\.csv\s*\("),
+    ("pyspark_json_read",   r"\.read\.json\s*\("),
+    ("pyspark_json_write",  r"\.write(?:\.\w+\([^)]*\))*\.json\s*\("),
+    ("pyspark_text_read",   r"\.read\.text\s*\("),
+    ("pyspark_text_write",  r"\.write(?:\.\w+\([^)]*\))*\.text\s*\("),
+    ("pyspark_csv_read_fmt",  r'\.read(?:\.\w+\([^)]*\))*\.format\s*\(\s*["\']csv["\']\s*\)'),
+    ("pyspark_csv_write_fmt", r'\.write(?:\.\w+\([^)]*\))*\.format\s*\(\s*["\']csv["\']\s*\)'),
+    ("pyspark_json_read_fmt", r'\.read(?:\.\w+\([^)]*\))*\.format\s*\(\s*["\']json["\']\s*\)'),
+    ("pyspark_json_write_fmt",r'\.write(?:\.\w+\([^)]*\))*\.format\s*\(\s*["\']json["\']\s*\)'),
+    ("pyspark_avro_read_fmt", r'\.read(?:\.\w+\([^)]*\))*\.format\s*\(\s*["\']avro["\']\s*\)'),
+    ("pyspark_avro_write_fmt",r'\.write(?:\.\w+\([^)]*\))*\.format\s*\(\s*["\']avro["\']\s*\)'),
+    ("pyspark_delta_read_fmt",r'\.read(?:\.\w+\([^)]*\))*\.format\s*\(\s*["\']delta["\']\s*\)'),
+    ("pyspark_delta_write_fmt",r'\.write(?:\.\w+\([^)]*\))*\.format\s*\(\s*["\']delta["\']\s*\)'),
+    ("pyspark_text_read_fmt", r'\.read(?:\.\w+\([^)]*\))*\.format\s*\(\s*["\']text["\']\s*\)'),
+    ("pyspark_text_write_fmt",r'\.write(?:\.\w+\([^)]*\))*\.format\s*\(\s*["\']text["\']\s*\)'),
+    ("pyspark_jdbc_read_fmt", r'\.read(?:\.\w+\([^)]*\))*\.format\s*\(\s*["\']jdbc["\']\s*\)'),
+    ("pyspark_jdbc_write_fmt",r'\.write(?:\.\w+\([^)]*\))*\.format\s*\(\s*["\']jdbc["\']\s*\)'),
+    ("pyspark_jdbc_read",   r"\.read\.jdbc\s*\("),
+
+    # spark.table()
+    ("spark_table_read",    r"spark\.table\s*\("),
+
+    # Python csv module
+    ("python_csv_writer",   r"csv\.(?:writer|DictWriter)\s*\("),
+    ("python_csv_reader",   r"csv\.(?:reader|DictReader)\s*\("),
+]
+
+_IO_EXTRA_JVM: list[tuple[str, str]] = [
+    # Java/Scala Spark CSV/JSON/text/Avro/Delta
+    ("jvm_csv_read",        r"\.read\(?\.?\)?\.csv\s*\("),
+    ("jvm_csv_write",       r"\.write\(?\.?\)?(?:\.\w+\([^)]*\))*\.csv\s*\("),
+    ("jvm_json_read",       r"\.read\(?\.?\)?\.json\s*\("),
+    ("jvm_json_write",      r"\.write\(?\.?\)?(?:\.\w+\([^)]*\))*\.json\s*\("),
+    ("jvm_text_read",       r"\.read\(?\.?\)?\.text\s*\("),
+    ("jvm_text_write",      r"\.write\(?\.?\)?(?:\.\w+\([^)]*\))*\.text\s*\("),
+    ("jvm_csv_read_fmt",    r'\.read\(?\.?\)?(?:\.\w+\([^)]*\))*\.format\s*\(\s*"csv"\s*\)'),
+    ("jvm_csv_write_fmt",   r'\.write\(?\.?\)?(?:\.\w+\([^)]*\))*\.format\s*\(\s*"csv"\s*\)'),
+    ("jvm_json_read_fmt",   r'\.read\(?\.?\)?(?:\.\w+\([^)]*\))*\.format\s*\(\s*"json"\s*\)'),
+    ("jvm_json_write_fmt",  r'\.write\(?\.?\)?(?:\.\w+\([^)]*\))*\.format\s*\(\s*"json"\s*\)'),
+    ("jvm_avro_read_fmt",   r'\.read\(?\.?\)?(?:\.\w+\([^)]*\))*\.format\s*\(\s*"avro"\s*\)'),
+    ("jvm_avro_write_fmt",  r'\.write\(?\.?\)?(?:\.\w+\([^)]*\))*\.format\s*\(\s*"avro"\s*\)'),
+    ("jvm_delta_read_fmt",  r'\.read\(?\.?\)?(?:\.\w+\([^)]*\))*\.format\s*\(\s*"delta"\s*\)'),
+    ("jvm_delta_write_fmt", r'\.write\(?\.?\)?(?:\.\w+\([^)]*\))*\.format\s*\(\s*"delta"\s*\)'),
+    ("jvm_text_read_fmt",   r'\.read\(?\.?\)?(?:\.\w+\([^)]*\))*\.format\s*\(\s*"text"\s*\)'),
+    ("jvm_text_write_fmt",  r'\.write\(?\.?\)?(?:\.\w+\([^)]*\))*\.format\s*\(\s*"text"\s*\)'),
+    ("jvm_jdbc_read_fmt",   r'\.read\(?\.?\)?(?:\.\w+\([^)]*\))*\.format\s*\(\s*"jdbc"\s*\)'),
+    ("jvm_jdbc_write_fmt",  r'\.write\(?\.?\)?(?:\.\w+\([^)]*\))*\.format\s*\(\s*"jdbc"\s*\)'),
+    ("jvm_jdbc_read",       r"\.read\(\)\.jdbc\s*\("),
+
+    # spark.table()
+    ("spark_table_read",    r"spark\.table\s*\("),
+
+    # Java FileWriter / BufferedWriter (local file I/O)
+    ("java_file_writer",    r"(?:FileWriter|BufferedWriter|PrintWriter)\s*\("),
+]
+
+
 _COMPILED_PY = [(name, re.compile(pat, re.IGNORECASE)) for name, pat in _PY_PATTERNS + _HIVE_PATTERNS]
 _COMPILED_JAVA = [(name, re.compile(pat, re.IGNORECASE)) for name, pat in _JAVA_SPARK_PATTERNS + _HIVE_PATTERNS]
 _COMPILED_SCALA = [(name, re.compile(pat, re.IGNORECASE)) for name, pat in _SCALA_SPARK_PATTERNS + _HIVE_PATTERNS]
 
+_COMPILED_ALL_PY = [(name, re.compile(pat, re.IGNORECASE)) for name, pat in _PY_PATTERNS + _HIVE_PATTERNS + _IO_EXTRA_PY]
+_COMPILED_ALL_JAVA = [(name, re.compile(pat, re.IGNORECASE)) for name, pat in _JAVA_SPARK_PATTERNS + _HIVE_PATTERNS + _IO_EXTRA_JVM]
+_COMPILED_ALL_SCALA = [(name, re.compile(pat, re.IGNORECASE)) for name, pat in _SCALA_SPARK_PATTERNS + _HIVE_PATTERNS + _IO_EXTRA_JVM]
 
-def _patterns_for_file(path: Path) -> list[tuple[str, re.Pattern]]:
+
+def _patterns_for_file(path: Path, *, all_io: bool = False) -> list[tuple[str, re.Pattern]]:
     suffix = path.suffix.lower()
-    if suffix == ".py":
-        return _COMPILED_PY
-    if suffix == ".java":
-        return _COMPILED_JAVA
-    if suffix == ".scala":
-        return _COMPILED_SCALA
+    if all_io:
+        if suffix == ".py":
+            return _COMPILED_ALL_PY
+        if suffix == ".java":
+            return _COMPILED_ALL_JAVA
+        if suffix == ".scala":
+            return _COMPILED_ALL_SCALA
+    else:
+        if suffix == ".py":
+            return _COMPILED_PY
+        if suffix == ".java":
+            return _COMPILED_JAVA
+        if suffix == ".scala":
+            return _COMPILED_SCALA
     return []
 
 
-def detect_parquet_usage(project_root: Path) -> list[PatternMatch]:
+def _detect(project_root: Path, *, all_io: bool = False) -> list[PatternMatch]:
     matches: list[PatternMatch] = []
     for src_file in sorted(project_root.rglob("*")):
         if not src_file.is_file():
             continue
         if src_file.suffix.lower() not in (_PY_EXTS | _JVM_EXTS):
             continue
-        compiled = _patterns_for_file(src_file)
+        compiled = _patterns_for_file(src_file, all_io=all_io)
+        if not compiled:
+            continue
         source = src_file.read_text(errors="replace")
         for logical in fold_chains(source):
             text = logical.folded_text
@@ -160,3 +244,15 @@ def detect_parquet_usage(project_root: Path) -> list[PatternMatch]:
                     ))
                     seen.add(pattern_type)
     return matches
+
+
+def detect_parquet_usage(project_root: Path) -> list[PatternMatch]:
+    """Detect parquet/ORC operations only (migration candidates)."""
+    return _detect(project_root, all_io=False)
+
+
+def detect_all_io(project_root: Path) -> list[PatternMatch]:
+    """Detect ALL data I/O operations — parquet, ORC, CSV, JSON, Avro,
+    Delta, text, JDBC, spark.table(), etc. Used for the full inventory
+    table the agent shows the user."""
+    return _detect(project_root, all_io=True)

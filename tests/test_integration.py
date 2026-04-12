@@ -11,12 +11,17 @@ HIVE_FIXTURE = FIXTURES / "java-hive"
 REPO_ROOT = Path(__file__).parent.parent
 
 
-def _run_cli(project: Path, table: str = "events", namespace: str = "default") -> subprocess.CompletedProcess:
+def _run_cli(
+    project: Path,
+    table: str = "events",
+    namespace: str = "default",
+    mode: str = "deterministic",
+) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_ROOT)
     return subprocess.run(
         [sys.executable, "-m", "skills.parquet_to_iceberg.cli",
-         str(project), "--table", table, "--namespace", namespace],
+         str(project), "--table", table, "--namespace", namespace, f"--mode={mode}"],
         capture_output=True, text=True, env=env,
     )
 

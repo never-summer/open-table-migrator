@@ -240,7 +240,7 @@ def test_cli_multi_table_with_mapping(tmp_path: Path):
     }))
 
     mapping = load_mapping(mapping_file)
-    rc = convert_project(proj, mapping=mapping)
+    rc = convert_project(proj, mapping=mapping, mode="deterministic")
     assert rc == 0
     rewritten = (proj / "etl.py").read_text()
     assert 'load_table(("analytics", "events"))' in rewritten
@@ -344,7 +344,7 @@ def test_cli_mapping_with_skip_entries(tmp_path: Path):
         ],
     }))
     mapping = load_mapping(mapping_file)
-    rc = convert_project(proj, mapping=mapping)
+    rc = convert_project(proj, mapping=mapping, mode="deterministic")
     assert rc == 0
     rewritten = (proj / "etl.py").read_text()
     assert 'load_table(("analytics", "events"))' in rewritten

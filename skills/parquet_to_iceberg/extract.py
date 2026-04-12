@@ -37,3 +37,107 @@ def extract_path_arg(line: str) -> str | None:
         if m:
             return m.group(1).strip("`")
     return None
+
+
+# ─── Subject (DataFrame / variable being operated on) ────────────────
+
+_SUBJECT_PATTERNS = [
+    # Assignment target: `val df = spark.read...` / `df = pd.read...`
+    re.compile(r'(?:val\s+|var\s+)?(\w+)\s*=\s*(?:spark|pd|pq|orc|po|pa|pyarrow)\b'),
+    # spark.read → subject is the assignment target before `=`
+    re.compile(r'(?:val\s+|var\s+)?(\w+)\s*=\s*.*\.read[.(]'),
+    # Method chain with possible intermediaries:
+    # `usersDF.orderBy(...).write...` / `df.write.format(...)` / `df.to_parquet(...)`
+    re.compile(r'\b(\w+)\.(?:\w+\([^)]*\)\.)*(?:write|writeTo|to_parquet|to_orc)\b'),
+    # Simpler fallback: first identifier before `.write` anywhere in the line
+    re.compile(r'\b(\w+)\.\w+.*\.write\b'),
+]
+
+
+def extract_subject(code: str) -> str | None:
+    """Extract the DataFrame/variable name that is the subject of the operation.
+
+    Strips leading comments (``//`` and ``#``) so that folded chains like
+    ``// comment text.bucketBy(8, "uid").saveAsTable("T")`` still find the
+    subject from the non-comment portion.
+    """
+    # Strip leading single-line comment prefix(es) to handle folded chains
+    # where a comment line was joined with a continuation line.
+    stripped = re.sub(r'^(?://|#)[^\n]*\.', '.', code)
+    for rx in _SUBJECT_PATTERNS:
+        m = rx.search(code)
+        if m:
+            name = m.group(1)
+            if name not in ("val", "var", "return", "def", "object", "class"):
+                return name
+        # Try on stripped version too
+        m2 = rx.search(stripped)
+        if m2:
+            name = m2.group(1)
+            if name not in ("val", "var", "return", "def", "object", "class"):
+                return name
+    return None
+
+
+# ─── Human-readable summary ──────────────────────────────────────────
+
+def summarize_operation(
+    code: str,
+    pattern_type: str,
+    path_arg: str | None,
+    subject_override: str | None = None,
+) -> str:
+    """Return a short (1-line) human-readable description of the operation."""
+    subject = subject_override or extract_subject(code) or "?"
+    target = path_arg or "(variable/expression)"
+    fmt = _format_of(pattern_type) or "data"
+
+    # Special cases first
+    if pattern_type == "spark_table_read":
+        return f"{subject} — reads table via spark.table({target})"
+    if pattern_type == "java_file_writer":
+        return f"{subject} — writes to local file via FileWriter/BufferedWriter"
+    if pattern_type == "hive_save_as_table":
+        return f"{subject} — saves as Hive table '{target}' (saveAsTable)"
+    if "hive_create" in pattern_type or "sql_using" in pattern_type:
+        return f"DDL — creates table {target} with {fmt} storage"
+    if "hive_insert" in pattern_type:
+        return f"DML — inserts into table {target}"
+
+    if "stream" in pattern_type:
+        direction = "reads stream from" if "read" in pattern_type else "writes stream to"
+        return f"{subject} — {direction} {target} (Structured Streaming, {fmt})"
+
+    if pattern_type.startswith("pyarrow"):
+        if "dataset" in pattern_type or "parquet_file" in pattern_type:
+            return f"{subject} — uses pyarrow dataset/ParquetFile API on {target}"
+        if "read" in pattern_type:
+            return f"{subject} — reads {fmt} into Arrow table from {target}"
+        return f"{subject} — writes Arrow table to {fmt} at {target}"
+
+    # Spark / pandas / pyarrow — generic path with format name
+    extras = []
+    if ".bucketBy(" in code:
+        m = re.search(r'\.bucketBy\(([^)]*)\)', code)
+        extras.append(f"bucketBy({m.group(1)})" if m else "bucketBy")
+    if ".partitionBy(" in code:
+        m = re.search(r'\.partitionBy\(([^)]*)\)', code)
+        extras.append(f"partitionBy({m.group(1)})" if m else "partitionBy")
+    if ".sortBy(" in code or ".orderBy(" in code:
+        extras.append("sorted")
+    extra_str = f" [{', '.join(extras)}]" if extras else ""
+
+    if "read" in pattern_type or "reader" in pattern_type:
+        return f"{subject} — reads {fmt} from {target}"
+    if "write" in pattern_type or "writer" in pattern_type:
+        return f"{subject} — writes {fmt} to {target}{extra_str}"
+
+    return f"{subject} — {fmt} I/O on {target}"
+
+
+def _format_of(pattern_type: str) -> str | None:
+    """Return the human-readable data format name from a pattern_type, or None."""
+    for fmt in ("csv", "json", "avro", "delta", "text", "jdbc", "excel", "parquet", "orc"):
+        if fmt in pattern_type:
+            return fmt.upper() if fmt in ("csv", "jdbc") else fmt.capitalize()
+    return None

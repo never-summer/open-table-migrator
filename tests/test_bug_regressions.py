@@ -59,7 +59,7 @@ def test_cli_reports_unchanged_file_with_warning(tmp_path: Path, capsys):
         'object Bad { df.write.format("parquet").save("s3://unresolved/") }\n'
     )
     # Provide table/namespace so CLI doesn't error out on missing config
-    rc = convert_project(proj, table_name="fallback", namespace="default")
+    rc = convert_project(proj, table_name="fallback", namespace="default", mode="deterministic")
     # With fallback, all paths resolve → file IS rewritten → "Converted"
     out = capsys.readouterr().out
     assert rc == 0
@@ -70,7 +70,7 @@ def test_cli_reports_no_build_files_found(tmp_path: Path, capsys):
     proj = tmp_path / "proj"
     proj.mkdir()
     (proj / "etl.py").write_text('import pandas as pd\ndf = pd.read_parquet("x")\n')
-    convert_project(proj, table_name="t", namespace="ns")
+    convert_project(proj, table_name="t", namespace="ns", mode="deterministic")
     out = capsys.readouterr().out
     assert "No build files updated" in out
 
@@ -80,7 +80,7 @@ def test_cli_reports_updated_build_files(tmp_path: Path, capsys):
     proj.mkdir()
     (proj / "etl.py").write_text('import pandas as pd\ndf = pd.read_parquet("x")\n')
     (proj / "requirements.txt").write_text("pandas\n")
-    convert_project(proj, table_name="t", namespace="ns")
+    convert_project(proj, table_name="t", namespace="ns", mode="deterministic")
     out = capsys.readouterr().out
     assert "Updated build file" in out
     assert "requirements.txt" in out
@@ -173,7 +173,7 @@ def test_cli_running_pandas_then_pyarrow_adds_one_import(tmp_path: Path):
         df = pd.read_parquet("a.parquet")
         t = pq.read_table("b.parquet")
     """).lstrip())
-    convert_project(proj, table_name="events", namespace="default")
+    convert_project(proj, table_name="events", namespace="default", mode="deterministic")
     out = (proj / "etl.py").read_text()
     assert out.count("from pyiceberg.catalog import load_catalog") == 1
 
