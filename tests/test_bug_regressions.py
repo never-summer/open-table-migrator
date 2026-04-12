@@ -7,7 +7,6 @@ from skills.open_table_migrator.analyzer import find_ddl_references
 from skills.open_table_migrator.cli import convert_project
 from skills.open_table_migrator.deps import update_dependencies
 from skills.open_table_migrator.detector import detect_parquet_usage
-from skills.open_table_migrator.folding import fold_chains
 from skills.open_table_migrator.transformers.pandas import transform_pandas_file
 from skills.open_table_migrator.transformers.pyarrow import transform_pyarrow_file
 from skills.open_table_migrator.transformers.pyspark import transform_pyspark_file
@@ -32,21 +31,6 @@ def test_detector_folds_multi_line_scala_write_chain(tmp_path: Path):
     # start_line points at the first physical line of the chain
     target = next(m for m in matches if m.path_arg == "UsersTbl")
     assert target.end_line is not None and target.end_line > target.line
-
-
-def test_fold_chains_joins_continuation_lines():
-    src = "df.write\n  .format(\"parquet\")\n  .saveAsTable(\"T\")\n"
-    blocks = fold_chains(src)
-    assert len(blocks) == 1
-    assert 'df.write.format("parquet").saveAsTable("T")' == blocks[0].folded_text
-    assert blocks[0].start_line == 1
-    assert blocks[0].end_line == 3
-
-
-def test_fold_chains_keeps_non_chain_lines_separate():
-    src = 'val x = 1\nval y = 2\n'
-    blocks = fold_chains(src)
-    assert len(blocks) == 2
 
 
 # ─── A1 / A8: CLI honest reporting ───────────────────────────────────
@@ -205,8 +189,8 @@ def test_pattern_match_exposes_direction_attribute(tmp_path: Path):
     )
     matches = detect_parquet_usage(tmp_path)
     dirs = {m.pattern_type: m.direction for m in matches}
-    assert dirs["pandas_read"] == "read"
-    assert dirs["pandas_write"] == "write"
+    assert dirs["pandas_read_parquet"] == "read"
+    assert dirs["pandas_write_parquet"] == "write"
 
 
 def test_pattern_match_direction_schema_for_hive_ddl(tmp_path: Path):

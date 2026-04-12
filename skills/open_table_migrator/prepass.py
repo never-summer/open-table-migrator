@@ -31,7 +31,7 @@ _ICEBERG_CONF_LINES = [
 _ICEBERG_CONF_MARKER_RE = re.compile(r"spark\.sql\.extensions.*IcebergSparkSessionExtensions")
 _SKIP_MARKER_TEXT = "# iceberg: skipped by mapping (kept as parquet/orc)"
 
-_PYSPARK_PATTERN_PREFIXES = ("pyspark_", "pyspark_stream_")
+_PYSPARK_PATTERN_PREFIXES = ("pyspark_", "spark_")
 
 
 def _is_pyspark_pattern(pattern_type: str) -> bool:

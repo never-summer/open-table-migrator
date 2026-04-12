@@ -93,11 +93,11 @@ def summarize_operation(
     fmt = _format_of(pattern_type) or "data"
 
     # Special cases first
-    if pattern_type == "spark_table_read":
+    if pattern_type in ("spark_table_read", "spark_read_table"):
         return f"{subject} — reads table via spark.table({target})"
-    if pattern_type == "java_file_writer":
+    if pattern_type in ("java_file_writer", "stdlib_write_file"):
         return f"{subject} — writes to local file via FileWriter/BufferedWriter"
-    if pattern_type == "hive_save_as_table":
+    if pattern_type in ("hive_save_as_table", "hive_save_table"):
         return f"{subject} — saves as Hive table '{target}' (saveAsTable)"
     if "hive_create" in pattern_type or "sql_using" in pattern_type:
         return f"DDL — creates table {target} with {fmt} storage"

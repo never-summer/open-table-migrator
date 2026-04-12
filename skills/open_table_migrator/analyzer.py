@@ -43,7 +43,7 @@ _OLD_WRITE_TYPES = {
     "scala_spark_write", "scala_spark_orc_write", "scala_spark_write_fmt",
     "scala_spark_stream_write", "scala_spark_stream_write_fmt",
     # Hive/SQL DML + API
-    "hive_save_as_table", "hive_insert_overwrite", "hive_insert_into",
+    "hive_save_as_table", "hive_save_table", "hive_insert_overwrite", "hive_insert_into",
     # Broad I/O — writes
     "pandas_csv_write", "pandas_json_write", "pandas_excel_write",
     "pyspark_csv_write", "pyspark_json_write", "pyspark_text_write",
@@ -139,8 +139,14 @@ def is_migration_candidate(pattern_type: str) -> bool:
     For new taxonomy ({runtime}_{direction}_{format}), checks the last segment.
     For old taxonomy, falls back to prefix matching.
     """
+    # Explicit migration candidates that don't end in parquet/orc
+    if pattern_type in ("hive_save_table", "hive_save_as_table"):
+        return True
     fmt = pattern_type.rsplit("_", 1)[-1]
     if fmt in {"parquet", "orc"}:
+        return True
+    # Dynamic hive_insert_{tablename} patterns are migration candidates
+    if pattern_type.startswith("hive_insert_"):
         return True
     # If the last segment is an explicit non-migration format, return False
     # (handles new taxonomy like spark_read_csv, pandas_write_json, etc.)

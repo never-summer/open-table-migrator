@@ -17,7 +17,7 @@ def test_detects_pandas_read(tmp_path):
     """)
     matches = detect_parquet_usage(tmp_path)
     assert len(matches) == 1
-    assert matches[0].pattern_type == "pandas_read"
+    assert matches[0].pattern_type == "pandas_read_parquet"
     assert matches[0].file.name == "etl.py"
 
 
@@ -27,7 +27,7 @@ def test_detects_pandas_write(tmp_path):
         df.to_parquet("out.parquet", index=False)
     """)
     matches = detect_parquet_usage(tmp_path)
-    assert any(m.pattern_type == "pandas_write" for m in matches)
+    assert any(m.pattern_type == "pandas_write_parquet" for m in matches)
 
 
 def test_detects_pyspark_read(tmp_path):
@@ -35,7 +35,7 @@ def test_detects_pyspark_read(tmp_path):
         df = spark.read.parquet("s3://bucket/events/")
     """)
     matches = detect_parquet_usage(tmp_path)
-    assert any(m.pattern_type == "pyspark_read" for m in matches)
+    assert any(m.pattern_type == "spark_read_parquet" for m in matches)
 
 
 def test_detects_pyspark_write(tmp_path):
@@ -43,7 +43,7 @@ def test_detects_pyspark_write(tmp_path):
         df.write.mode("overwrite").parquet("output/")
     """)
     matches = detect_parquet_usage(tmp_path)
-    assert any(m.pattern_type == "pyspark_write" for m in matches)
+    assert any(m.pattern_type == "spark_write_parquet" for m in matches)
 
 
 def test_detects_pyarrow_read(tmp_path):
@@ -52,7 +52,7 @@ def test_detects_pyarrow_read(tmp_path):
         t = pq.read_table("data.parquet")
     """)
     matches = detect_parquet_usage(tmp_path)
-    assert any(m.pattern_type == "pyarrow_read" for m in matches)
+    assert any(m.pattern_type == "pyarrow_read_parquet" for m in matches)
 
 
 def test_detects_pyarrow_write(tmp_path):
@@ -61,7 +61,7 @@ def test_detects_pyarrow_write(tmp_path):
         pq.write_table(table, "data.parquet")
     """)
     matches = detect_parquet_usage(tmp_path)
-    assert any(m.pattern_type == "pyarrow_write" for m in matches)
+    assert any(m.pattern_type == "pyarrow_write_parquet" for m in matches)
 
 
 def test_skips_non_source_files(tmp_path):
@@ -85,7 +85,7 @@ def test_detects_java_spark_read(tmp_path):
         }
     """)
     matches = detect_parquet_usage(tmp_path)
-    assert any(m.pattern_type == "java_spark_read" for m in matches)
+    assert any(m.pattern_type == "spark_read_parquet" for m in matches)
 
 
 def test_detects_java_spark_write(tmp_path):
@@ -93,7 +93,7 @@ def test_detects_java_spark_write(tmp_path):
         df.write().mode("overwrite").parquet("output/");
     """)
     matches = detect_parquet_usage(tmp_path)
-    assert any(m.pattern_type == "java_spark_write" for m in matches)
+    assert any(m.pattern_type == "spark_write_parquet" for m in matches)
 
 
 def test_detects_scala_spark_read(tmp_path):
@@ -101,7 +101,7 @@ def test_detects_scala_spark_read(tmp_path):
         val df = spark.read.parquet("data/events/")
     """)
     matches = detect_parquet_usage(tmp_path)
-    assert any(m.pattern_type == "scala_spark_read" for m in matches)
+    assert any(m.pattern_type == "spark_read_parquet" for m in matches)
 
 
 def test_detects_scala_spark_write(tmp_path):
@@ -109,7 +109,7 @@ def test_detects_scala_spark_write(tmp_path):
         df.write.mode("overwrite").parquet("output/")
     """)
     matches = detect_parquet_usage(tmp_path)
-    assert any(m.pattern_type == "scala_spark_write" for m in matches)
+    assert any(m.pattern_type == "spark_write_parquet" for m in matches)
 
 
 # ─── Hive / SparkSQL patterns ──────────────────────────────────────────
@@ -127,7 +127,7 @@ def test_detects_hive_save_as_table(tmp_path):
         df.write().mode("overwrite").saveAsTable("events");
     """)
     matches = detect_parquet_usage(tmp_path)
-    assert any(m.pattern_type == "hive_save_as_table" for m in matches)
+    assert any(m.pattern_type == "hive_save_table" for m in matches)
 
 
 def test_detects_hive_insert_into(tmp_path):
@@ -135,4 +135,4 @@ def test_detects_hive_insert_into(tmp_path):
         spark.sql("INSERT OVERWRITE TABLE events SELECT * FROM staging");
     ''')
     matches = detect_parquet_usage(tmp_path)
-    assert any(m.pattern_type == "hive_insert_overwrite" for m in matches)
+    assert any(m.pattern_type.startswith("hive_insert_") for m in matches)

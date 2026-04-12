@@ -25,7 +25,6 @@ from pathlib import Path
 
 from .analyzer import direction_of
 from .detector import PatternMatch
-from .folding import fold_chains
 from .targets import Decision, Resolver
 
 
@@ -74,9 +73,7 @@ def _hint_for(pattern_type: str, direction: str, decision: Decision) -> str:
         if direction == "read":
             return f"rewrite to `{{var}} = tbl.scan().to_pandas()` using tbl bound to {fqn}"
         return f"rewrite to `tbl.overwrite({{df}})` using tbl bound to {fqn}"
-    if pattern_type.startswith("pyarrow_dataset") or pattern_type in (
-        "pyarrow_parquet_file", "pyarrow_parquet_dataset"
-    ):
+    if pattern_type in ("pyarrow_read_dataset", "pyarrow_write_dataset"):
         return (
             f"pyarrow dataset / ParquetFile API — rewrite to "
             f"`catalog.load_table(('ns','table')).scan().to_arrow()` for {fqn}"
@@ -85,14 +82,17 @@ def _hint_for(pattern_type: str, direction: str, decision: Decision) -> str:
         if direction == "read":
             return f"rewrite to `tbl.scan().to_arrow()` using tbl bound to {fqn}"
         return f"rewrite to `tbl.overwrite({{table}})` using tbl bound to {fqn}"
-    if pattern_type.startswith("pyspark_stream") or pattern_type.startswith(
-        "java_spark_stream"
-    ) or pattern_type.startswith("scala_spark_stream"):
+    if pattern_type.startswith("spark_stream") or pattern_type.startswith(
+        "pyspark_stream"
+    ) or pattern_type.startswith("java_spark_stream") or pattern_type.startswith("scala_spark_stream"):
         return (
             f"Structured Streaming sink/source — rewrite using "
             f"`.format('iceberg').option('path', '{fqn}')` or `.toTable('{fqn}')`"
         )
-    if pattern_type.startswith("pyspark"):
+    if (
+        pattern_type.startswith("pyspark")
+        or (pattern_type.startswith("spark_") and not pattern_type.startswith("spark_stream") and pattern_type != "spark_read_table")
+    ):
         if direction == "read":
             return f"rewrite to `spark.table(\"{fqn}\")`"
         return f"rewrite to `{{df}}.writeTo(\"{fqn}\").overwritePartitions()`"
@@ -104,9 +104,9 @@ def _hint_for(pattern_type: str, direction: str, decision: Decision) -> str:
         return "replace `STORED AS PARQUET|ORC` with `USING iceberg` in the SQL string"
     if pattern_type in ("sql_using_parquet", "sql_using_orc"):
         return "replace `USING parquet|orc` with `USING iceberg` in the SQL string"
-    if pattern_type in ("hive_insert_into", "hive_insert_overwrite"):
+    if pattern_type.startswith("hive_insert_"):
         return "INSERT INTO/OVERWRITE — SQL works as-is on Iceberg; verify the table is the migrated one"
-    if pattern_type == "hive_save_as_table":
+    if pattern_type in ("hive_save_as_table", "hive_save_table"):
         return f"rewrite `.saveAsTable(...)` to `.writeTo(\"{fqn}\").createOrReplace()`"
     return f"rewrite this {direction} op to target {fqn}"
 
@@ -135,8 +135,6 @@ def build_worklist(
         except OSError:
             continue
         source_lines = source.splitlines(keepends=True)
-        # Map start_line → folded text for quick lookup
-        folded_by_start = {block.start_line: block for block in fold_chains(source)}
 
         for m in file_matches:
             direction = direction_of(m.pattern_type)
@@ -147,8 +145,6 @@ def build_worklist(
 
             start = m.line
             end = m.end_line or m.line
-            block = folded_by_start.get(start)
-            folded = block.folded_text if block else m.original_code
 
             try:
                 rel = src_file.relative_to(project_root)
@@ -164,7 +160,7 @@ def build_worklist(
                 direction=direction,
                 language=_LANG_BY_SUFFIX.get(src_file.suffix.lower(), "unknown"),
                 path_arg=m.path_arg,
-                original_code=folded.strip(),
+                original_code=m.original_code.strip(),
                 surrounding=_surrounding(source_lines, start, end),
                 resolved_namespace=target.namespace if target else None,
                 resolved_table=target.table if target else None,
