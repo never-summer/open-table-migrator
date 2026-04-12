@@ -1,89 +1,219 @@
-# parquet-iceberg
+# open-table-migrator
 
-A Claude Code **skill** and **subagent** that migrate Python, Java, and Scala projects from Apache Parquet (and Hive-parquet) to Apache Iceberg tables.
+Skill + субагент для Claude Code. Анализирует data-проекты на Python, Java и Scala: находит все точки чтения и записи данных, строит карту I/O-операций и мигрирует с Parquet/ORC/другие на Apache Iceberg(тесты только для него - но теоритически можно на любой).
 
-## What's in this repo
+## Возможности
 
-| Path | Purpose |
+### Инвентаризация I/O
+
+Сканирует `.py`, `.java`, `.scala` файлы и находит **все** операции чтения и записи данных:
+
+| Формат | Примеры паттернов |
 |---|---|
-| [skills/open_table_migrator/](skills/open_table_migrator/) | The skill: detector, analyzer, filters, transformers, dependency updater, CLI |
-| [skills/open_table_migrator/SKILL.md](skills/open_table_migrator/SKILL.md) | Full skill reference — patterns, conversion tables, limitations |
-| [.claude/agents/open-table-migrator-migrator.md](.claude/agents/open-table-migrator-migrator.md) | The subagent that drives the migration end-to-end |
-| [tests/](tests/) | 60 unit + integration tests covering detector, transformers, deps, CLI |
-| [tests/fixtures/](tests/fixtures/) | Minimal sample projects in each supported stack |
-| [docs/superpowers/plans/](docs/superpowers/plans/) | Implementation plan (12 tasks) |
+| Parquet | `pd.read_parquet`, `spark.read.parquet`, `pq.write_table`, `.format("parquet")` |
+| ORC | `pd.read_orc`, `orc.read_table`, `.format("orc")` |
+| CSV | `pd.read_csv`, `spark.read.csv`, `.format("csv")`, `csv.reader` |
+| JSON | `pd.read_json`, `.format("json")` |
+| Avro | `.format("avro")` |
+| Delta | `.format("delta")` |
+| JDBC | `spark.read.jdbc`, `.format("jdbc")` |
+| Text | `spark.read.text`, `.format("text")` |
+| Hive DDL | `CREATE TABLE ... STORED AS PARQUET\|ORC`, `USING parquet\|orc` |
+| Hive DML | `INSERT INTO TABLE`, `INSERT OVERWRITE TABLE`, `saveAsTable` |
+| SQL-файлы | `.sql`, `.hql`, `.ddl` — реестр таблиц + кросс-ссылки с кодом |
 
-## What it converts
+Для каждой операции определяется:
+- **Направление** — read / write / schema
+- **Объект** (subject) — имя DataFrame или переменной
+- **Цель** (path_arg) — путь или имя таблицы
+- **Краткое описание** — например: `usersDF — writes Parquet to s3://bucket/users [partitionBy("region")]`
 
-- **Python** — pandas, PySpark, pyarrow (incl. ORC variants) → pyiceberg
-- **JVM** — Java/Scala Spark Dataset API (`.parquet`/`.orc`/`.format("parquet"|"orc")`) → Iceberg Spark runtime
-- **Hive SparkSQL** — `STORED AS PARQUET|ORC`, `USING parquet|orc`, `saveAsTable`, `INSERT INTO|OVERWRITE TABLE` → Iceberg-backed tables
-- **Warn-only detection** — Structured Streaming sinks and pyarrow `dataset`/`ParquetFile`/`ParquetDataset` are flagged with `TODO(iceberg)` comments for manual rewrite.
+Всего ~40 типов паттернов, включая многострочные цепочки вызовов (fluent chains).
 
-See the [full conversion reference](skills/open_table_migrator/SKILL.md#conversion-reference--python) in SKILL.md.
+### Миграция Parquet/ORC → Iceberg
 
-## Usage
+Два режима:
 
-### As a CLI
+| Режим | Описание |
+|---|---|
+| **hybrid** (по умолчанию) | Анализатор находят, LLM переписывает. CLI выдает `iceberg-worklist.json` |
+| **deterministic** | Регэкспы находят **и** переписывают. Без LLM, полностью воспроизводимо |
 
-Single-table:
+Конвертирует:
+- pandas → pyiceberg (`catalog.load_table(...).scan().to_pandas()`)
+- PySpark → `spark.table()` / `df.writeTo().overwritePartitions()`
+- Java/Scala Spark → `format("iceberg")` / `writeTo()`
+- Hive DDL → `USING iceberg`
+- Обновляет зависимости: `requirements.txt`, `pyproject.toml`, `pom.xml`, `build.gradle[.kts]`, `build.sbt`
+
+### SQL-реестр
+
+Сканирует `.sql`/`.hql`/`.ddl` файлы, находит `CREATE TABLE ... STORED AS PARQUET|ORC` и кросс-ссылки с кодом — когда код пишет в таблицу через `saveAsTable("events")`, а формат определен в отдельном SQL-файле.
+
+---
+
+## Быстрый старт
+
+### Вариант 1: Субагент в Claude Code
+
+Скажите:
+
+> *"проанализируй все чтения и записи в проекте"*
+> *"мигрируй на iceberg"*
+> *"migrate this project to iceberg"*
+
+[Субагент](.claude/agents/open-table-migrator.md) автоматически:
+1. Запустит детектор и покажет таблицу всех I/O-операций
+2. Просканирует SQL-файлы и покажет кросс-ссылки
+3. Спросит какие таблицы мигрировать, а какие оставить
+4. Выполнит миграцию (hybrid или deterministic)
+5. Проверит результат — детектор должен вернуть ноль остаточных паттернов
+
+### Вариант 2: CLI (без LLM)
+
+Анализ:
 
 ```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli <project_path> \
-    --table <table_name> --namespace <namespace>
+PYTHONPATH=. python -c "
+from pathlib import Path
+from skills.open_table_migrator.detector import detect_all_io
+from skills.open_table_migrator.analyzer import build_report, format_report, dedup_matches
+from skills.open_table_migrator.extract import summarize_operation, extract_subject
+
+matches = detect_all_io(Path('путь/к/проекту'))
+print(format_report(build_report(matches), project_root=Path('путь/к/проекту')))
+"
 ```
 
-Multi-table (one Iceberg table per path glob):
+Миграция (одна таблица):
 
 ```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli <project_path> \
+PYTHONPATH=. python -m skills.open_table_migrator.cli путь/к/проекту \
+    --table events --namespace analytics --mode=deterministic
+```
+
+Миграция (несколько таблиц):
+
+```bash
+PYTHONPATH=. python -m skills.open_table_migrator.cli путь/к/проекту \
     --mapping ./iceberg-mapping.json
 ```
 
-See [SKILL.md § Multi-table projects](skills/open_table_migrator/SKILL.md#multi-table-projects) for the mapping file format.
+Формат маппинга — в [SKILL.md](skills/open_table_migrator/SKILL.md#multi-table-projects).
 
-### Via Claude Code
+---
 
-Say something like *"migrate this project to iceberg"* or *"convert parquet to iceberg"* (Russian works too: *"мигрируй на iceberg"*). The [open-table-migrator-migrator](.claude/agents/open-table-migrator-migrator.md) agent takes over and:
+## Пример: LearningSparkV2
 
-1. Detects parquet usage across `.py`/`.java`/`.scala`
-2. Shows a report broken down by file, direction, and pattern type
-3. Asks for target table name, namespace, and catalog type
-4. Runs the transformers and updates build files
-5. Surfaces manual TODOs (partition specs, catalog config, data migration)
-6. Re-runs the detector to verify zero residual patterns
+Проект [LearningSparkV2](https://github.com/databricks/LearningSparkV2) — примеры из книги *Learning Spark*, ~30 Scala/Java/Python файлов с разнообразным Spark I/O.
 
-## Running the tests
+### Шаг 1: Анализ
+
+```
+> проанализируй все чтения и записи в LearningSparkV2
+```
+
+Детектор находит ~25 операций в 12 файлах:
+
+```
+Found 25 Parquet/ORC operation(s) across 12 file(s):
+
+By direction:
+  read   : 11
+  write  : 12
+  schema :  2
+
+Per-file breakdown:
+  chapter04/scala/src/main/scala/SparkJob.scala:
+    scala_spark_write_fmt  (write)  line 54:59
+      usersDF — writes Parquet to UsersTbl [bucketBy(8, "uid"), partitionBy("region")]
+    scala_spark_read_fmt   (read)   line 62:62
+      logsDF — reads Parquet from s3://bucket/logs
+  ...
+```
+
+Плюс кросс-ссылки с SQL:
+
+```
+SQL-defined tables with 2 code cross-reference(s):
+  SparkJob.scala:57  write 'UsersTbl'  — defined as parquet in schema.sql:3
+  SparkJob.scala:72  write 'EventsTbl' — defined as parquet in schema.sql:8
+```
+
+### Шаг 2: Решение по каждой таблице
+
+Агент спрашивает по каждому sink/source:
+
+> *Операция `write` на `UsersTbl` (2 call sites) — мигрировать на Iceberg? Namespace/table?*
+
+Пользователь отвечает:
+- `UsersTbl` → `analytics.users`
+- `EventsTbl` → `analytics.events`
+- `s3://bucket/logs` → оставить как есть (`skip: true`)
+
+### Шаг 3: Миграция
+
+```bash
+PYTHONPATH=. python -m skills.open_table_migrator.cli ./LearningSparkV2 \
+    --mapping iceberg-mapping.json
+```
+
+CLI выдает `iceberg-worklist.json` с задачами для агента. Агент переписывает каждую операцию через `Edit`, затем перезапускает детектор — ноль остаточных паттернов.
+
+---
+
+## Тесты
 
 ```bash
 PYTHONPATH=. pytest tests/ --ignore=tests/fixtures -v
 ```
 
-All 60 tests should pass. Fixtures under `tests/fixtures/` are deliberately excluded — they're sample inputs, not test modules.
+190 тестов. Фикстуры в `tests/fixtures/` — входные данные, не тестовые модули.
 
-## Project layout inside the skill
+## Roadmap: tree-sitter детектор
+
+Текущий детектор работает на regex (~80 паттернов + ручная склейка многострочных цепочек). Следующий шаг — замена на [tree-sitter](https://tree-sitter.github.io/) AST-парсер:
+
+- **Нет ложных срабатываний** — AST отличает код от строк и комментариев
+- **Нет ручного folding** — дерево знает границы выражений
+- **Динамические форматы** — любой `.read.FORMAT()` попадает, не нужно добавлять regex для каждого нового формата
+- **Упрощённая таксономия** — `{runtime}_{direction}_{format}` вместо 80 отдельных pattern_type
+
+Spec: [docs/superpowers/specs/2026-04-12-tree-sitter-detector-design.md](docs/superpowers/specs/2026-04-12-tree-sitter-detector-design.md)
+Regex-код сохранён в ветке `regex-detector`.
+
+## Структура
 
 ```
 skills/open_table_migrator/
-├── SKILL.md              # Skill frontmatter + reference doc
-├── detector.py           # Regex scanner: 13 pattern types
-├── analyzer.py           # build_report / format_report
-├── filters.py            # filter_matches by direction/pattern/glob
-├── deps.py               # update_dependencies for 4 build file formats
-├── cli.py                # python -m skills.open_table_migrator.cli
+├── SKILL.md              # Справочная документация
+├── detector.py           # Regex-сканер (~40 типов паттернов) → tree-sitter (planned)
+├── analyzer.py           # Отчеты, дедупликация, SQL кросс-ссылки
+├── sql_registry.py       # Реестр таблиц из .sql/.hql/.ddl
+├── extract.py            # Извлечение path_arg, subject, описания
+├── folding.py            # Склейка многострочных цепочек → удаляется при tree-sitter
+├── filters.py            # Фильтрация по направлению/паттерну/glob
+├── targets.py            # Мульти-таблица: маппинг, резолвер
+├── deps.py               # Обновление зависимостей (5 форматов)
+├── prepass.py            # Skip-маркеры + pyspark conf
+├── worklist.py           # iceberg-worklist.json (hybrid)
+├── cli.py                # CLI entry point
 └── transformers/
     ├── pandas.py
     ├── pyspark.py
     ├── pyarrow.py
-    └── jvm.py            # java + scala (language= param)
+    └── jvm.py            # Java + Scala
+
+.claude/agents/
+└── open-table-migrator.md  # Субагент
 ```
 
-## Known limitations
+## Ограничения
 
-- Path arguments must be **string literals** for multi-table routing (variables and f-strings are marked `TODO(iceberg)` for manual mapping)
-- Streaming writes (Structured Streaming parquet sinks) are out of scope
-- Existing parquet *data* is not migrated — the skill rewrites code only; use `CALL catalog.system.migrate(...)` for in-place Hive migration
-- JVM coordinates target Spark 3.5 + Scala 2.12; adjust manually for other versions
-- `partitionBy(...)` in JVM code is preserved as a `TODO` comment for the user to add to the Iceberg partition spec
+- Path-аргументы должны быть строковыми литералами (переменные → `TODO(iceberg)`)
+- Streaming — только warn-only (TODO-комментарий)
+- Данные не мигрируются — только код; для Hive используйте `CALL catalog.system.migrate(...)`
+- JVM-координаты: Spark 3.5 + Scala 2.12
+- `partitionBy(...)` в JVM → TODO для ручного добавления в Iceberg partition spec
 
-Full list in [SKILL.md § Known Limitations](skills/open_table_migrator/SKILL.md#known-limitations).
+Полный список — в [SKILL.md § Known Limitations](skills/open_table_migrator/SKILL.md#known-limitations).
