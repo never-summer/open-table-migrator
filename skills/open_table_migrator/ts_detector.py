@@ -352,6 +352,171 @@ _STRING_NODE_TYPES = {
 # Per-language pattern detectors
 # ---------------------------------------------------------------------------
 
+_PANDAS_WRITE_FORMATS = frozenset({
+    "parquet", "csv", "json", "orc", "excel", "feather", "hdf",
+    "stata", "pickle", "html", "xml", "latex", "markdown",
+    "clipboard", "sql", "gbq",
+})
+
+_SPARK_FORMAT_TERMINALS = frozenset({
+    "parquet", "orc", "csv", "json", "text", "avro", "delta",
+})
+
+
+def _detect_python_lib(
+    method_name: str, obj_text: str, args, lang: str,
+    file_path: Path, line: int, end_line: int,
+    original_code: str, first_str: str | None,
+) -> PatternMatch | None:
+    """Detect pandas, pyarrow, and stdlib csv patterns (Python only)."""
+
+    # --- pandas: pd.read_FORMAT / .to_FORMAT ---
+    if method_name.startswith("read_") and ("pd" in obj_text or "pandas" in obj_text):
+        fmt = method_name[5:]
+        return PatternMatch(
+            file=file_path, line=line,
+            pattern_type=f"pandas_read_{fmt}",
+            original_code=original_code,
+            path_arg=first_str, end_line=end_line, format=fmt,
+        )
+
+    if method_name.startswith("to_") and method_name != "to_":
+        fmt = method_name[3:]
+        if fmt in _PANDAS_WRITE_FORMATS:
+            return PatternMatch(
+                file=file_path, line=line,
+                pattern_type=f"pandas_write_{fmt}",
+                original_code=original_code,
+                path_arg=first_str, end_line=end_line, format=fmt,
+            )
+
+    # --- pyarrow: pq.read_table, pq.write_table, pq.ParquetFile, etc. ---
+    if method_name == "read_table":
+        if any(x in obj_text for x in ("pq", "parquet")):
+            return PatternMatch(
+                file=file_path, line=line,
+                pattern_type="pyarrow_read_parquet",
+                original_code=original_code,
+                path_arg=first_str, end_line=end_line, format="parquet",
+            )
+        if any(x in obj_text for x in ("orc", "po")):
+            return PatternMatch(
+                file=file_path, line=line,
+                pattern_type="pyarrow_read_orc",
+                original_code=original_code,
+                path_arg=first_str, end_line=end_line, format="orc",
+            )
+
+    if method_name == "write_table":
+        path_arg = _nth_positional_arg_string(args, lang, 1) if args else None
+        if any(x in obj_text for x in ("pq", "parquet")):
+            return PatternMatch(
+                file=file_path, line=line,
+                pattern_type="pyarrow_write_parquet",
+                original_code=original_code,
+                path_arg=path_arg, end_line=end_line, format="parquet",
+            )
+        if any(x in obj_text for x in ("orc", "po")):
+            return PatternMatch(
+                file=file_path, line=line,
+                pattern_type="pyarrow_write_orc",
+                original_code=original_code,
+                path_arg=path_arg, end_line=end_line, format="orc",
+            )
+
+    if method_name in ("ParquetFile", "ParquetDataset"):
+        if any(x in obj_text for x in ("pq", "parquet")):
+            return PatternMatch(
+                file=file_path, line=line,
+                pattern_type="pyarrow_read_dataset",
+                original_code=original_code,
+                path_arg=first_str, end_line=end_line, format="parquet",
+            )
+
+    if method_name == "dataset" and any(x in obj_text for x in ("pa.dataset", "pyarrow.dataset", "dataset")):
+        return PatternMatch(
+            file=file_path, line=line,
+            pattern_type="pyarrow_read_dataset",
+            original_code=original_code,
+            path_arg=first_str, end_line=end_line, format="dataset",
+        )
+
+    if method_name == "write_dataset" and any(x in obj_text for x in ("pa.dataset", "pyarrow.dataset", "dataset")):
+        path_arg = _nth_positional_arg_string(args, lang, 1) if args else None
+        return PatternMatch(
+            file=file_path, line=line,
+            pattern_type="pyarrow_write_dataset",
+            original_code=original_code,
+            path_arg=path_arg, end_line=end_line, format="dataset",
+        )
+
+    # --- stdlib: csv.reader/writer, csv.DictReader/DictWriter ---
+    if method_name in ("writer", "DictWriter") and "csv" in obj_text:
+        return PatternMatch(
+            file=file_path, line=line,
+            pattern_type="stdlib_write_csv",
+            original_code=original_code,
+            path_arg=first_str, end_line=end_line, format="csv",
+        )
+    if method_name in ("reader", "DictReader") and "csv" in obj_text:
+        return PatternMatch(
+            file=file_path, line=line,
+            pattern_type="stdlib_read_csv",
+            original_code=original_code,
+            path_arg=first_str, end_line=end_line, format="csv",
+        )
+
+    return None
+
+
+def _spark_chain_direction(chain_kws: set[str], method_name: str) -> str:
+    """Determine read/write/stream direction from chain keywords."""
+    if method_name in ("save", "start"):
+        return "stream_write" if "writeStream" in chain_kws else "write"
+    if method_name == "load":
+        return "stream_read" if "readStream" in chain_kws else "read"
+    if "writeStream" in chain_kws:
+        return "stream_write"
+    if "write" in chain_kws and "readStream" not in chain_kws:
+        return "write"
+    if "readStream" in chain_kws:
+        return "stream_read"
+    return "read"
+
+
+def _detect_spark_chain(
+    node, method_name: str, lang: str,
+    file_path: Path, line: int, end_line: int,
+    original_code: str, first_str: str | None,
+) -> PatternMatch | None:
+    """Detect Spark .read/.write/.readStream/.writeStream chain patterns."""
+    chain_kws = _find_chain_keywords(node)
+    if not chain_kws:
+        return None
+
+    if method_name in _SPARK_FORMAT_TERMINALS:
+        direction = _spark_chain_direction(chain_kws, method_name)
+        return PatternMatch(
+            file=file_path, line=line,
+            pattern_type=f"spark_{direction}_{method_name}",
+            original_code=original_code,
+            path_arg=first_str, end_line=end_line, format=method_name,
+        )
+
+    if method_name in ("load", "save", "start"):
+        fmt = _find_format_in_chain(node, lang)
+        if fmt:
+            direction = _spark_chain_direction(chain_kws, method_name)
+            return PatternMatch(
+                file=file_path, line=line,
+                pattern_type=f"spark_{direction}_{fmt}",
+                original_code=original_code,
+                path_arg=first_str, end_line=end_line, format=fmt,
+            )
+
+    return None
+
+
 def _detect_calls_in_tree(root, lang: str, file_path: Path, source_bytes: bytes) -> list[PatternMatch]:
     """Walk the AST and detect all I/O call patterns."""
     matches: list[PatternMatch] = []
@@ -359,7 +524,6 @@ def _detect_calls_in_tree(root, lang: str, file_path: Path, source_bytes: bytes)
     string_types = _STRING_NODE_TYPES[lang]
 
     for node in _walk(root):
-        # --- Hive SQL in string literals ---
         if node.type in string_types:
             val = _extract_string(node, lang)
             if val:
@@ -374,7 +538,6 @@ def _detect_calls_in_tree(root, lang: str, file_path: Path, source_bytes: bytes)
                         end_line=top.end_point[0] + 1,
                     ))
 
-        # --- Java "new" object creation (FileWriter, etc.) ---
         if lang == "java" and node.type == "object_creation_expression":
             type_node = node.child_by_field_name("type")
             if type_node is not None:
@@ -398,8 +561,6 @@ def _detect_calls_in_tree(root, lang: str, file_path: Path, source_bytes: bytes)
 
         if node.type != call_type:
             continue
-
-        # Skip calls inside comments or string-only contexts
         if _is_inside_comment(node, lang):
             continue
         if _is_inside_string_only(node, lang):
@@ -418,224 +579,39 @@ def _detect_calls_in_tree(root, lang: str, file_path: Path, source_bytes: bytes)
         end_line = top.end_point[0] + 1
         original_code = top.text.decode().strip()
 
-        # --- pandas: pd.read_FORMAT / .to_FORMAT ---
         if lang == "python":
-            if method_name.startswith("read_") and ("pd" in obj_text or "pandas" in obj_text):
-                fmt = method_name[5:]  # strip "read_"
-                matches.append(PatternMatch(
-                    file=file_path, line=line,
-                    pattern_type=f"pandas_read_{fmt}",
-                    original_code=original_code,
-                    path_arg=first_str,
-                    end_line=end_line,
-                    format=fmt,
-                ))
+            m = _detect_python_lib(
+                method_name, obj_text, args, lang,
+                file_path, line, end_line, original_code, first_str,
+            )
+            if m:
+                matches.append(m)
                 continue
 
-            if method_name.startswith("to_") and method_name != "to_":
-                fmt = method_name[3:]  # strip "to_"
-                # Verify it looks like a pandas write (not a random .to_X call)
-                # pandas to_ methods: to_parquet, to_csv, to_json, to_orc, to_excel, etc.
-                if fmt in (
-                    "parquet", "csv", "json", "orc", "excel", "feather", "hdf",
-                    "stata", "pickle", "html", "xml", "latex", "markdown",
-                    "clipboard", "sql", "gbq",
-                ):
-                    matches.append(PatternMatch(
-                        file=file_path, line=line,
-                        pattern_type=f"pandas_write_{fmt}",
-                        original_code=original_code,
-                        path_arg=first_str,
-                        end_line=end_line,
-                        format=fmt,
-                    ))
-                    continue
-
-        # --- pyarrow: pq.read_table, pq.write_table, pq.ParquetFile, etc. ---
-        if lang == "python":
-            # pq.read_table / orc.read_table / po.read_table
-            if method_name == "read_table":
-                if any(x in obj_text for x in ("pq", "parquet")):
-                    matches.append(PatternMatch(
-                        file=file_path, line=line,
-                        pattern_type="pyarrow_read_parquet",
-                        original_code=original_code,
-                        path_arg=first_str,
-                        end_line=end_line,
-                        format="parquet",
-                    ))
-                    continue
-                if any(x in obj_text for x in ("orc", "po")):
-                    matches.append(PatternMatch(
-                        file=file_path, line=line,
-                        pattern_type="pyarrow_read_orc",
-                        original_code=original_code,
-                        path_arg=first_str,
-                        end_line=end_line,
-                        format="orc",
-                    ))
-                    continue
-
-            # pq.write_table / orc.write_table / po.write_table
-            if method_name == "write_table":
-                path_arg = _nth_positional_arg_string(args, lang, 1) if args else None
-                if any(x in obj_text for x in ("pq", "parquet")):
-                    matches.append(PatternMatch(
-                        file=file_path, line=line,
-                        pattern_type="pyarrow_write_parquet",
-                        original_code=original_code,
-                        path_arg=path_arg,
-                        end_line=end_line,
-                        format="parquet",
-                    ))
-                    continue
-                if any(x in obj_text for x in ("orc", "po")):
-                    matches.append(PatternMatch(
-                        file=file_path, line=line,
-                        pattern_type="pyarrow_write_orc",
-                        original_code=original_code,
-                        path_arg=path_arg,
-                        end_line=end_line,
-                        format="orc",
-                    ))
-                    continue
-
-            # pq.ParquetFile / pq.ParquetDataset
-            if method_name in ("ParquetFile", "ParquetDataset"):
-                if any(x in obj_text for x in ("pq", "parquet")):
-                    matches.append(PatternMatch(
-                        file=file_path, line=line,
-                        pattern_type="pyarrow_read_dataset",
-                        original_code=original_code,
-                        path_arg=first_str,
-                        end_line=end_line,
-                        format="parquet",
-                    ))
-                    continue
-
-            # pa.dataset.dataset / pyarrow.dataset.dataset
-            if method_name == "dataset" and any(x in obj_text for x in ("pa.dataset", "pyarrow.dataset", "dataset")):
-                matches.append(PatternMatch(
-                    file=file_path, line=line,
-                    pattern_type="pyarrow_read_dataset",
-                    original_code=original_code,
-                    path_arg=first_str,
-                    end_line=end_line,
-                    format="dataset",
-                ))
-                continue
-
-            # pa.dataset.write_dataset
-            if method_name == "write_dataset" and any(x in obj_text for x in ("pa.dataset", "pyarrow.dataset", "dataset")):
-                path_arg = _nth_positional_arg_string(args, lang, 1) if args else None
-                matches.append(PatternMatch(
-                    file=file_path, line=line,
-                    pattern_type="pyarrow_write_dataset",
-                    original_code=original_code,
-                    path_arg=path_arg,
-                    end_line=end_line,
-                    format="dataset",
-                ))
-                continue
-
-        # --- stdlib: csv.reader/writer, csv.DictReader/DictWriter ---
-        if lang == "python":
-            if method_name in ("writer", "DictWriter") and "csv" in obj_text:
-                matches.append(PatternMatch(
-                    file=file_path, line=line,
-                    pattern_type="stdlib_write_csv",
-                    original_code=original_code,
-                    path_arg=first_str,
-                    end_line=end_line,
-                    format="csv",
-                ))
-                continue
-            if method_name in ("reader", "DictReader") and "csv" in obj_text:
-                matches.append(PatternMatch(
-                    file=file_path, line=line,
-                    pattern_type="stdlib_read_csv",
-                    original_code=original_code,
-                    path_arg=first_str,
-                    end_line=end_line,
-                    format="csv",
-                ))
-                continue
-
-        # --- spark.table("name") ---
         if method_name == "table" and "spark" in obj_text:
             matches.append(PatternMatch(
                 file=file_path, line=line,
                 pattern_type="spark_read_table",
                 original_code=original_code,
-                path_arg=first_str,
-                end_line=end_line,
-                format="table",
+                path_arg=first_str, end_line=end_line, format="table",
             ))
             continue
 
-        # --- saveAsTable("name") ---
         if method_name == "saveAsTable":
             matches.append(PatternMatch(
                 file=file_path, line=line,
                 pattern_type="hive_save_table",
                 original_code=original_code,
-                path_arg=first_str,
-                end_line=end_line,
+                path_arg=first_str, end_line=end_line,
             ))
             continue
 
-        # --- Spark batch/stream: .read/.write/.readStream/.writeStream chain ---
-        # Detect terminal methods like .parquet(), .orc(), .csv(), .json(), .load(), .save(), .start()
-        chain_kws = _find_chain_keywords(node)
-
-        # Terminal format methods: parquet, orc, csv, json, text, avro, delta
-        _FORMAT_TERMINALS = {
-            "parquet", "orc", "csv", "json", "text", "avro", "delta",
-        }
-
-        if method_name in _FORMAT_TERMINALS and chain_kws:
-            is_stream = "readStream" in chain_kws or "writeStream" in chain_kws
-            if "writeStream" in chain_kws or ("write" in chain_kws and "writeStream" not in chain_kws and "readStream" not in chain_kws):
-                direction = "stream_write" if "writeStream" in chain_kws else "write"
-            elif "readStream" in chain_kws:
-                direction = "stream_read"
-            else:
-                direction = "read"
-            matches.append(PatternMatch(
-                file=file_path, line=line,
-                pattern_type=f"spark_{direction}_{method_name}",
-                original_code=original_code,
-                path_arg=first_str,
-                end_line=end_line,
-                format=method_name,
-            ))
-            continue
-
-        # .load() / .save() / .start() with .format("X") in chain
-        if method_name in ("load", "save", "start") and chain_kws:
-            fmt = _find_format_in_chain(node, lang)
-            if fmt:
-                if method_name == "load":
-                    if "readStream" in chain_kws:
-                        direction = "stream_read"
-                    else:
-                        direction = "read"
-                elif method_name in ("save", "start"):
-                    if "writeStream" in chain_kws:
-                        direction = "stream_write"
-                    else:
-                        direction = "write"
-                else:
-                    direction = "read"
-                matches.append(PatternMatch(
-                    file=file_path, line=line,
-                    pattern_type=f"spark_{direction}_{fmt}",
-                    original_code=original_code,
-                    path_arg=first_str,
-                    end_line=end_line,
-                    format=fmt,
-                ))
-                continue
+        m = _detect_spark_chain(
+            node, method_name, lang,
+            file_path, line, end_line, original_code, first_str,
+        )
+        if m:
+            matches.append(m)
 
     return matches
 
