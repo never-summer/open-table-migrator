@@ -12,7 +12,7 @@ Analyzes data projects in **Python, Java, and Scala** (extensible): finds all da
 | **Migration** | Parquet / ORC → Iceberg (tested), architecture — any → any |
 | **Target formats** | Iceberg now; Paimon / Delta / Hudi planned |
 
-![I/O detection and migration](docs/assets/open_table_migrator_io_v3.svg)
+![I/O detection and migration](docs/assets/open_table_migrator_io_v6.svg)
 
 ---
 
