@@ -108,7 +108,7 @@ PYTHONPATH=. python -m skills.open_table_migrator.cli путь/к/проекту
 Детектор находит ~25 операций в 12 файлах:
 
 ```
-Found 25 Parquet/ORC operation(s) across 12 file(s):
+Found 25 data I/O operation(s) across 12 file(s):
 
 By direction:
   read   : 11

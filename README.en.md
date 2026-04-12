@@ -109,7 +109,7 @@ Mapping format — see [SKILL.md](skills/open_table_migrator/SKILL.md#multi-tabl
 The detector finds ~25 operations across 12 files:
 
 ```
-Found 25 Parquet/ORC operation(s) across 12 file(s):
+Found 25 data I/O operation(s) across 12 file(s):
 
 By direction:
   read   : 11

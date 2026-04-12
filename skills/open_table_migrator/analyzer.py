@@ -421,10 +421,10 @@ def cross_reference_sql(
 
 def format_report(report: Report, *, project_root: Path) -> str:
     if report.total == 0:
-        return "No Parquet / Hive usage found."
+        return "No data I/O operations found."
 
     lines: list[str] = []
-    lines.append(f"Found {report.total} Parquet/ORC operation(s) across {len(report.by_file)} file(s):")
+    lines.append(f"Found {report.total} data I/O operation(s) across {len(report.by_file)} file(s):")
     lines.append("")
 
     lines.append("By direction:")
