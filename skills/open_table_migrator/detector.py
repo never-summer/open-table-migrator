@@ -14,6 +14,7 @@ class PatternMatch:
     original_code: str
     path_arg: str | None = None
     end_line: int | None = None  # last physical line of the logical statement
+    format: str | None = None  # NEW
 
     @property
     def direction(self) -> str:

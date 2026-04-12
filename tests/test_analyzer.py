@@ -1,5 +1,5 @@
 from pathlib import Path
-from skills.open_table_migrator.analyzer import build_report, format_report, direction_of
+from skills.open_table_migrator.analyzer import build_report, format_report, direction_of, is_migration_candidate
 from skills.open_table_migrator.detector import PatternMatch
 
 
@@ -62,3 +62,38 @@ def test_format_report_human_readable(tmp_path):
     assert "write" in text.lower()
     # Shows line numbers
     assert ":10" in text or "line 10" in text
+
+
+def test_direction_of_new_taxonomy():
+    assert direction_of("spark_read_parquet") == "read"
+    assert direction_of("spark_write_csv") == "write"
+    assert direction_of("spark_stream_read_orc") == "read"
+    assert direction_of("spark_stream_write_parquet") == "write"
+    assert direction_of("pandas_read_json") == "read"
+    assert direction_of("pandas_write_excel") == "write"
+    assert direction_of("pyarrow_read_parquet") == "read"
+    assert direction_of("pyarrow_write_orc") == "write"
+    assert direction_of("hive_create_parquet") == "schema"
+    assert direction_of("hive_insert_orc") == "write"
+    assert direction_of("hive_save_parquet") == "write"
+    assert direction_of("stdlib_read_csv") == "read"
+    assert direction_of("stdlib_write_file") == "write"
+
+
+def test_direction_of_old_taxonomy_still_works():
+    assert direction_of("pandas_read") == "read"
+    assert direction_of("pyspark_write") == "write"
+    assert direction_of("hive_create_parquet") == "schema"
+    assert direction_of("hive_save_as_table") == "write"
+    assert direction_of("java_spark_read") == "read"
+    assert direction_of("scala_spark_stream_write_fmt") == "write"
+    assert direction_of("pyarrow_dataset_write") == "write"
+
+
+def test_is_migration_candidate_new_taxonomy():
+    assert is_migration_candidate("spark_read_parquet") is True
+    assert is_migration_candidate("spark_write_orc") is True
+    assert is_migration_candidate("spark_read_csv") is False
+    assert is_migration_candidate("pandas_write_json") is False
+    assert is_migration_candidate("hive_create_parquet") is True
+    assert is_migration_candidate("hive_create_orc") is True

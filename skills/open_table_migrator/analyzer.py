@@ -4,7 +4,7 @@ from pathlib import Path
 from .detector import PatternMatch
 
 
-_READ_TYPES = {
+_OLD_READ_TYPES = {
     # Python — parquet/orc
     "pandas_read", "pandas_orc_read",
     "pyspark_read", "pyspark_orc_read", "pyspark_read_fmt",
@@ -30,7 +30,7 @@ _READ_TYPES = {
     "python_csv_reader",
     "spark_table_read",
 }
-_WRITE_TYPES = {
+_OLD_WRITE_TYPES = {
     # Python — parquet/orc
     "pandas_write", "pandas_orc_write",
     "pyspark_write", "pyspark_orc_write", "pyspark_write_fmt",
@@ -54,10 +54,15 @@ _WRITE_TYPES = {
     "jvm_delta_write_fmt", "jvm_text_write_fmt", "jvm_jdbc_write_fmt",
     "python_csv_writer", "java_file_writer",
 }
-_SCHEMA_TYPES = {
+_OLD_SCHEMA_TYPES = {
     "hive_create_parquet", "hive_create_orc",
     "sql_using_parquet", "sql_using_orc",
 }
+
+# Keep aliases for any code that still references the old names
+_READ_TYPES = _OLD_READ_TYPES
+_WRITE_TYPES = _OLD_WRITE_TYPES
+_SCHEMA_TYPES = _OLD_SCHEMA_TYPES
 
 
 # Patterns for which transformers only emit a TODO comment (not a full rewrite)
@@ -73,18 +78,43 @@ _WARN_ONLY_TYPES = {
 }
 
 
+_READ_DIRECTIONS = {"read"}
+_WRITE_DIRECTIONS = {"write", "insert", "save"}
+_SCHEMA_DIRECTIONS = {"create"}
+
+
 def direction_of(pattern_type: str) -> str:
-    if pattern_type in _READ_TYPES:
+    # Old taxonomy — exact match
+    if pattern_type in _OLD_READ_TYPES:
         return "read"
-    if pattern_type in _WRITE_TYPES:
+    if pattern_type in _OLD_WRITE_TYPES:
         return "write"
-    if pattern_type in _SCHEMA_TYPES:
+    if pattern_type in _OLD_SCHEMA_TYPES:
         return "schema"
+    # New taxonomy — parse direction from parts
+    parts = pattern_type.split("_")
+    for part in parts:
+        if part in _READ_DIRECTIONS:
+            return "read"
+        if part in _WRITE_DIRECTIONS:
+            return "write"
+        if part in _SCHEMA_DIRECTIONS:
+            return "schema"
+    if "read" in pattern_type:
+        return "read"
+    if "write" in pattern_type:
+        return "write"
     return "unknown"
 
 
 def is_warn_only(pattern_type: str) -> bool:
-    return pattern_type in _WARN_ONLY_TYPES
+    if pattern_type in _WARN_ONLY_TYPES:
+        return True
+    if pattern_type.startswith("spark_stream_"):
+        return True
+    if pattern_type.startswith("pyarrow_") and "dataset" in pattern_type:
+        return True
+    return False
 
 
 _PARQUET_ORC_PREFIXES = (
@@ -97,8 +127,26 @@ _PARQUET_ORC_PREFIXES = (
 )
 
 
+_KNOWN_NON_MIGRATION_FORMATS = {
+    "csv", "json", "avro", "delta", "text", "jdbc", "excel",
+    "xml", "yaml", "toml", "file", "writer", "reader", "table",
+}
+
+
 def is_migration_candidate(pattern_type: str) -> bool:
-    """True if this pattern type is a parquet/orc operation (migration target)."""
+    """True if this pattern type is a parquet/orc operation (migration target).
+
+    For new taxonomy ({runtime}_{direction}_{format}), checks the last segment.
+    For old taxonomy, falls back to prefix matching.
+    """
+    fmt = pattern_type.rsplit("_", 1)[-1]
+    if fmt in {"parquet", "orc"}:
+        return True
+    # If the last segment is an explicit non-migration format, return False
+    # (handles new taxonomy like spark_read_csv, pandas_write_json, etc.)
+    if fmt in _KNOWN_NON_MIGRATION_FORMATS:
+        return False
+    # Old taxonomy fallback (last segment not a recognizable format token)
     return any(pattern_type.startswith(p) for p in _PARQUET_ORC_PREFIXES)
 
 
