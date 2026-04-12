@@ -8,7 +8,7 @@ Analyzes data projects in **Python, Java, and Scala** (extensible): finds all da
 
 | | |
 |---|---|
-| **Detector** | Tree-sitter AST — discovers any format automatically |
+| **Detector** | Parses code into an AST (Abstract Syntax Tree) via tree-sitter; algorithmic tree walking finds all I/O |
 | **Migration** | Parquet / ORC → Iceberg (tested), architecture — any → any |
 | **Target formats** | Iceberg now; Paimon / Delta / Hudi planned |
 
