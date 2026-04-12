@@ -240,9 +240,8 @@ def test_cli_multi_table_with_mapping(tmp_path: Path):
     }))
 
     mapping = load_mapping(mapping_file)
-    rc = convert_project(proj, mapping=mapping, mode="deterministic")
-    assert rc == 0
-    rewritten = (proj / "etl.py").read_text()
+    src = (proj / "etl.py").read_text()
+    rewritten = transform_pandas_file(src, mapping=mapping)
     assert 'load_table(("analytics", "events"))' in rewritten
     assert 'load_table(("analytics", "users"))' in rewritten
     assert "pd.read_parquet" not in rewritten
@@ -344,9 +343,8 @@ def test_cli_mapping_with_skip_entries(tmp_path: Path):
         ],
     }))
     mapping = load_mapping(mapping_file)
-    rc = convert_project(proj, mapping=mapping, mode="deterministic")
-    assert rc == 0
-    rewritten = (proj / "etl.py").read_text()
+    src = (proj / "etl.py").read_text()
+    rewritten = transform_pandas_file(src, mapping=mapping)
     assert 'load_table(("analytics", "events"))' in rewritten
     assert 'pd.read_parquet("s3://legacy/old.parquet")' in rewritten
     assert "iceberg: skipped by mapping" in rewritten

@@ -1,16 +1,7 @@
 """
-Modes:
-
-    --mode=hybrid         (default) regex finds, agent/LLM rewrites. The CLI
-                          runs the detector + a deterministic pre-pass (skip
-                          markers + pyspark conf comment) and emits
-                          ``iceberg-worklist.json`` at the project root for
-                          the agent to consume.
-
-    --mode=deterministic  regex finds *and* rewrites. The CLI runs the full
-                          transformer pipeline on each file in-place. Use
-                          this for reproducible dry-runs or when you don't
-                          want any LLM in the loop.
+The CLI runs the AST-based detector, a pre-pass (skip markers + pyspark conf
+comment), and emits ``iceberg-worklist.json`` at the project root for the
+agent/LLM to consume.
 
 Single-table usage:
     python -m skills.open_table_migrator.cli <project> --table <name> --namespace <ns>
@@ -29,7 +20,6 @@ Multi-table usage (mapping file):
 import argparse
 import sys
 from pathlib import Path
-from typing import Literal
 
 from .analyzer import cross_reference_sql, dedup_matches, find_ddl_references
 from .detector import detect_parquet_usage
@@ -37,13 +27,7 @@ from .sql_registry import build_format_map, scan_sql_files
 from .deps import update_dependencies
 from .prepass import run_prepass
 from .targets import Mapping, Target, build_resolver, load_mapping
-from .transformers.pandas import transform_pandas_file
-from .transformers.pyspark import transform_pyspark_file
-from .transformers.pyarrow import transform_pyarrow_file
-from .transformers.jvm import transform_jvm_file
 from .worklist import build_worklist, write_worklist
-
-Mode = Literal["hybrid", "deterministic"]
 
 
 def convert_project(
@@ -52,7 +36,6 @@ def convert_project(
     table_name: str | None = None,
     namespace: str | None = None,
     mapping: Mapping | None = None,
-    mode: Mode = "hybrid",
     update_deps: bool = True,
 ) -> int:
     matches = detect_parquet_usage(project_root)
@@ -67,10 +50,7 @@ def convert_project(
     fallback = Target(namespace=namespace, table=table_name) if (namespace and table_name) else None
     resolver = build_resolver(mapping, fallback)
 
-    if mode == "hybrid":
-        _run_hybrid(project_root, matches, resolver)
-    else:
-        _run_deterministic(project_root, matches, table_name, namespace, mapping)
+    _run_hybrid(project_root, matches, resolver)
 
     # SQL file registry: cross-reference code ops with SQL-defined parquet/orc tables
     sql_defs = scan_sql_files(project_root)
@@ -117,13 +97,8 @@ def convert_project(
         print("  NOTE: DROP/TRUNCATE still work on Iceberg; CACHE/UNCACHE/REFRESH semantics differ.")
 
     print("\nNext steps:")
-    if mode == "hybrid":
-        print("  1. Open iceberg-worklist.json and rewrite each entry by hand.")
-        print("  2. Re-run detector to verify zero residual matches.")
-    else:
-        print("  Python: pip install pyiceberg[sql-sqlite]")
-        print("  JVM:    ensure iceberg-spark-runtime is on the classpath")
-        print("  Create Iceberg table schema(s) and run your tests")
+    print("  1. Open iceberg-worklist.json and rewrite each entry by hand.")
+    print("  2. Re-run detector to verify zero residual matches.")
     return 0
 
 
@@ -132,7 +107,6 @@ def _run_hybrid(
     matches,
     resolver,
 ) -> None:
-    # Deterministic pre-pass — skip markers + pyspark conf comments.
     prepass_edits = run_prepass(matches, resolver)
     if prepass_edits:
         for f, count in sorted(prepass_edits.items()):
@@ -153,73 +127,12 @@ def _run_hybrid(
             print(f"  {unresolved} entry(s) need a manual target — fix mapping or rewrite by hand.")
 
 
-def _run_deterministic(
-    project_root: Path,
-    matches,
-    table_name: str | None,
-    namespace: str | None,
-    mapping: Mapping | None,
-) -> None:
-    files = sorted({m.file for m in matches})
-    kw = {
-        "table_name": table_name,
-        "namespace": namespace,
-        "mapping": mapping,
-    }
-
-    changed_files: list[Path] = []
-    unchanged_files: list[Path] = []
-
-    for src_file in files:
-        before = src_file.read_text()
-        after = before
-        suffix = src_file.suffix.lower()
-
-        if suffix == ".py":
-            after = transform_pandas_file(after, **kw)
-            after = transform_pyspark_file(after, **kw)
-            after = transform_pyarrow_file(after, **kw)
-        elif suffix == ".java":
-            after = transform_jvm_file(after, language="java", **kw)
-        elif suffix == ".scala":
-            after = transform_jvm_file(after, language="scala", **kw)
-        else:
-            continue
-
-        rel = src_file.relative_to(project_root)
-        if after != before:
-            src_file.write_text(after)
-            changed_files.append(src_file)
-            print(f"  Converted: {rel}")
-        else:
-            unchanged_files.append(src_file)
-            file_hits = [m for m in matches if m.file == src_file]
-            print(
-                f"  WARNING: {rel} — transformer produced no changes despite "
-                f"{len(file_hits)} detector hit(s). Inspect manually."
-            )
-
-    print(f"\nConverted {len(changed_files)} file(s).")
-    if unchanged_files:
-        print(
-            f"{len(unchanged_files)} file(s) left unchanged (transformer no-op) — "
-            "see warnings above."
-        )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert Parquet/ORC usage to Apache Iceberg")
     parser.add_argument("project", type=Path, help="Path to project root")
     parser.add_argument("--table", help="Iceberg table name (single-table / fallback)")
     parser.add_argument("--namespace", default="default", help="Iceberg namespace (single-table / fallback)")
     parser.add_argument("--mapping", type=Path, help="Path to JSON mapping file for multi-table routing")
-    parser.add_argument(
-        "--mode",
-        choices=("hybrid", "deterministic"),
-        default="hybrid",
-        help="hybrid (default): emit worklist for agent/LLM to rewrite; "
-             "deterministic: regex-only rewrites in place",
-    )
     parser.add_argument(
         "--no-deps",
         action="store_true",
@@ -236,7 +149,6 @@ def main() -> None:
         table_name=table,
         namespace=ns,
         mapping=mapping,
-        mode=args.mode,
         update_deps=not args.no_deps,
     ))
 

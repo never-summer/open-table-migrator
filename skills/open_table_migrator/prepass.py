@@ -1,8 +1,7 @@
-"""Hybrid-mode deterministic pre-pass.
+"""Pre-pass: skip markers and Iceberg config comments.
 
-Before the agent starts rewriting worklist entries by hand, the skill runs a
-small deterministic pass that handles two kinds of edits which have no LLM
-judgment in them:
+Before the agent starts rewriting worklist entries, the CLI runs a small
+pre-pass that handles two kinds of edits which have no LLM judgment in them:
 
 1. **Skip markers** — if mapping says a path is ``skip: true``, drop a
    ``# iceberg: skipped by mapping (kept as parquet/orc)`` comment above the

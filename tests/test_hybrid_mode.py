@@ -174,7 +174,7 @@ def test_cli_hybrid_mode_writes_worklist_and_leaves_reads_untouched(
     (proj / "etl.py").write_text(
         'import pandas as pd\ndf = pd.read_parquet("x.parquet")\n'
     )
-    rc = convert_project(proj, table_name="events", namespace="default", mode="hybrid")
+    rc = convert_project(proj, table_name="events", namespace="default")
     assert rc == 0
     out = capsys.readouterr().out
     assert "Hybrid mode" in out
@@ -201,7 +201,7 @@ def test_cli_hybrid_mode_runs_prepass_for_skip_markers(tmp_path: Path):
     }))
     from skills.open_table_migrator.targets import load_mapping
     mapping = load_mapping(mapping_path)
-    convert_project(proj, mapping=mapping, mode="hybrid")
+    convert_project(proj, mapping=mapping)
     out = (proj / "etl.py").read_text()
     # Skip marker injected; original line preserved
     assert "iceberg: skipped by mapping" in out
@@ -219,7 +219,7 @@ def test_cli_hybrid_mode_injects_pyspark_conf_comment(tmp_path: Path):
             df = spark.read.parquet("data/")
             return df
     """).lstrip())
-    convert_project(proj, table_name="events", namespace="default", mode="hybrid")
+    convert_project(proj, table_name="events", namespace="default")
     out = (proj / "job.py").read_text()
     assert "IcebergSparkSessionExtensions" in out
     # Source read op untouched (hybrid does not rewrite)
@@ -232,7 +232,7 @@ def test_cli_no_deps_flag_skips_dependency_update(tmp_path: Path, capsys):
     (proj / "etl.py").write_text('import pandas as pd\ndf = pd.read_parquet("x")\n')
     (proj / "requirements.txt").write_text("pandas\n")
     convert_project(
-        proj, table_name="t", namespace="ns", mode="hybrid", update_deps=False
+        proj, table_name="t", namespace="ns", update_deps=False
     )
     out = capsys.readouterr().out
     assert "Deps updater skipped" in out
@@ -240,16 +240,11 @@ def test_cli_no_deps_flag_skips_dependency_update(tmp_path: Path, capsys):
     assert (proj / "requirements.txt").read_text() == "pandas\n"
 
 
-def test_cli_deterministic_mode_preserves_old_behavior(tmp_path: Path, capsys):
+def test_cli_always_produces_worklist(tmp_path: Path, capsys):
     proj = tmp_path / "proj"
     proj.mkdir()
     (proj / "etl.py").write_text('import pandas as pd\ndf = pd.read_parquet("x")\n')
-    convert_project(proj, table_name="events", namespace="default", mode="deterministic")
+    convert_project(proj, table_name="events", namespace="default")
     out = capsys.readouterr().out
-    assert "Converted" in out
-    # No worklist file in deterministic mode
-    assert not (proj / "iceberg-worklist.json").exists()
-    # Actual rewrite happened
-    rewritten = (proj / "etl.py").read_text()
-    assert "pd.read_parquet" not in rewritten
-    assert "tbl.scan().to_pandas()" in rewritten
+    assert "rewrite task" in out
+    assert (proj / "iceberg-worklist.json").exists()

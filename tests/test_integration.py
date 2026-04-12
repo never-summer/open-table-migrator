@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -15,13 +16,12 @@ def _run_cli(
     project: Path,
     table: str = "events",
     namespace: str = "default",
-    mode: str = "deterministic",
 ) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_ROOT)
     return subprocess.run(
         [sys.executable, "-m", "skills.open_table_migrator.cli",
-         str(project), "--table", table, "--namespace", namespace, f"--mode={mode}"],
+         str(project), "--table", table, "--namespace", namespace],
         capture_output=True, text=True, env=env,
     )
 
@@ -33,10 +33,9 @@ def test_converts_pandas_fixture(tmp_path):
     result = _run_cli(project)
     assert result.returncode == 0, result.stderr
 
-    etl = (project / "src" / "etl.py").read_text()
-    assert "pd.read_parquet" not in etl
-    assert "to_parquet" not in etl
-    assert "pyiceberg" in etl or "load_catalog" in etl
+    worklist = json.loads((project / "iceberg-worklist.json").read_text())
+    assert worklist["count"] >= 1
+    assert any("pandas" in e["pattern_type"] for e in worklist["entries"])
 
     req = (project / "requirements.txt").read_text()
     assert "pyiceberg" in req
@@ -49,11 +48,9 @@ def test_converts_java_spark_fixture(tmp_path):
     result = _run_cli(project)
     assert result.returncode == 0, result.stderr
 
-    java_src = (project / "src/main/java/com/example/EventsJob.java").read_text()
-    assert ".read().parquet(" not in java_src
-    assert ".write().mode(\"overwrite\").parquet(" not in java_src
-    assert 'format("iceberg")' in java_src
-    assert 'writeTo("default.events")' in java_src
+    worklist = json.loads((project / "iceberg-worklist.json").read_text())
+    assert worklist["count"] >= 1
+    assert any("spark" in e["pattern_type"] for e in worklist["entries"])
 
     pom = (project / "pom.xml").read_text()
     assert "iceberg-spark-runtime" in pom
@@ -66,11 +63,9 @@ def test_converts_java_hive_fixture(tmp_path):
     result = _run_cli(project)
     assert result.returncode == 0, result.stderr
 
-    hive_src = (project / "src/main/java/com/example/HiveEtl.java").read_text()
-    assert "STORED AS PARQUET" not in hive_src
-    assert "USING iceberg" in hive_src
-    assert "saveAsTable" not in hive_src
-    assert 'writeTo("default.events")' in hive_src
+    worklist = json.loads((project / "iceberg-worklist.json").read_text())
+    assert worklist["count"] >= 1
+    assert any("hive" in e["pattern_type"] for e in worklist["entries"])
 
     pom = (project / "pom.xml").read_text()
     assert "iceberg-spark-runtime" in pom
@@ -81,4 +76,4 @@ def test_cli_prints_summary(tmp_path):
     shutil.copytree(PANDAS_FIXTURE, project)
 
     result = _run_cli(project)
-    assert "Converted" in result.stdout or "converted" in result.stdout
+    assert "rewrite task" in result.stdout

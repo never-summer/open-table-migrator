@@ -35,26 +35,24 @@ def test_detector_folds_multi_line_scala_write_chain(tmp_path: Path):
 
 # ─── A1 / A8: CLI honest reporting ───────────────────────────────────
 
-def test_cli_reports_unchanged_file_with_warning(tmp_path: Path, capsys):
+def test_cli_reports_worklist_for_detected_file(tmp_path: Path, capsys):
     proj = tmp_path / "proj"
     proj.mkdir()
-    # File has a detector hit but the transformer can't resolve it (no mapping entry)
     (proj / "bad.scala").write_text(
         'object Bad { df.write.format("parquet").save("s3://unresolved/") }\n'
     )
-    # Provide table/namespace so CLI doesn't error out on missing config
-    rc = convert_project(proj, table_name="fallback", namespace="default", mode="deterministic")
-    # With fallback, all paths resolve → file IS rewritten → "Converted"
+    rc = convert_project(proj, table_name="fallback", namespace="default")
     out = capsys.readouterr().out
     assert rc == 0
-    assert "Converted" in out
+    assert "rewrite task" in out
+    assert (proj / "iceberg-worklist.json").exists()
 
 
 def test_cli_reports_no_build_files_found(tmp_path: Path, capsys):
     proj = tmp_path / "proj"
     proj.mkdir()
     (proj / "etl.py").write_text('import pandas as pd\ndf = pd.read_parquet("x")\n')
-    convert_project(proj, table_name="t", namespace="ns", mode="deterministic")
+    convert_project(proj, table_name="t", namespace="ns")
     out = capsys.readouterr().out
     assert "No build files updated" in out
 
@@ -64,7 +62,7 @@ def test_cli_reports_updated_build_files(tmp_path: Path, capsys):
     proj.mkdir()
     (proj / "etl.py").write_text('import pandas as pd\ndf = pd.read_parquet("x")\n')
     (proj / "requirements.txt").write_text("pandas\n")
-    convert_project(proj, table_name="t", namespace="ns", mode="deterministic")
+    convert_project(proj, table_name="t", namespace="ns")
     out = capsys.readouterr().out
     assert "Updated build file" in out
     assert "requirements.txt" in out
@@ -157,9 +155,12 @@ def test_cli_running_pandas_then_pyarrow_adds_one_import(tmp_path: Path):
         df = pd.read_parquet("a.parquet")
         t = pq.read_table("b.parquet")
     """).lstrip())
-    convert_project(proj, table_name="events", namespace="default", mode="deterministic")
-    out = (proj / "etl.py").read_text()
-    assert out.count("from pyiceberg.catalog import load_catalog") == 1
+    from skills.open_table_migrator.transformers.pandas import transform_pandas_file
+    from skills.open_table_migrator.transformers.pyarrow import transform_pyarrow_file
+    src = (proj / "etl.py").read_text()
+    src = transform_pandas_file(src, table_name="events", namespace="default")
+    src = transform_pyarrow_file(src, table_name="events", namespace="default")
+    assert src.count("from pyiceberg.catalog import load_catalog") == 1
 
 
 # ─── A6: multi-line _ICEBERG_CONF_COMMENT indent ─────────────────────

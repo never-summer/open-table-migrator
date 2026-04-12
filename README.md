@@ -8,7 +8,7 @@ Skill + субагент для Claude Code.
 |---|---|
 | **Детектор** | Tree-sitter AST — находит любой формат автоматически |
 | **Миграция** | Parquet / ORC → Iceberg (протестировано), архитектура — any → any |
-| **Целевые форматы** | Iceberg сейчас, Paimon / Delta / Hudi — планируются |
+| **Целевые форматы** | Iceberg сейчас, Paimon / Delta / Hudi / итд планируются |
 
 ---
 
@@ -27,12 +27,7 @@ Skill + субагент для Claude Code.
 
 ### Миграция → Iceberg
 
-Два режима:
-
-| Режим | Описание |
-|---|---|
-| **hybrid** (по умолчанию) | AST-детектор находит, LLM переписывает. CLI выдает `iceberg-worklist.json` |
-| **deterministic** | Детектор находит, regex переписывает. Без LLM, полностью воспроизводимо |
+AST-детектор находит операции, CLI выдает `iceberg-worklist.json`, агент/LLM переписывает код.
 
 Конвертирует:
 
@@ -62,12 +57,12 @@ Skill + субагент для Claude Code.
 1. Запустит детектор и покажет таблицу всех I/O-операций
 2. Просканирует SQL-файлы и покажет кросс-ссылки
 3. Спросит какие таблицы мигрировать, а какие оставить
-4. Выполнит миграцию (hybrid или deterministic)
+4. Выполнит миграцию по worklist
 5. Проверит результат — детектор должен вернуть ноль остаточных паттернов
 
-### Вариант 2: CLI (без LLM)
+### Вариант 2: CLI
 
-Анализ:
+Анализ (без LLM):
 
 ```bash
 PYTHONPATH=. python -c "
@@ -80,11 +75,11 @@ print(format_report(build_report(matches), project_root=Path('путь/к/про
 "
 ```
 
-Миграция (одна таблица):
+Миграция (одна таблица — выдает `iceberg-worklist.json`):
 
 ```bash
 PYTHONPATH=. python -m skills.open_table_migrator.cli путь/к/проекту \
-    --table events --namespace analytics --mode=deterministic
+    --table events --namespace analytics
 ```
 
 Миграция (несколько таблиц):

@@ -1,23 +1,21 @@
-"""Hybrid-mode worklist builder.
+"""Worklist builder.
 
-In hybrid mode the skill's job is to **find** rewrite sites, not to perform
-the rewrites. For every detected operation that needs a real code change, the
-CLI produces a ``WorklistEntry`` containing enough context for an agent / LLM
-to do the rewrite by hand via an ``Edit`` tool:
+The CLI's job is to **find** rewrite sites, not to perform the rewrites. For
+every detected operation that needs a real code change, it produces a
+``WorklistEntry`` containing enough context for an agent / LLM to do the
+rewrite via an ``Edit`` tool:
 
-- which file and line range (the *logical* statement, not a physical line —
-  multi-line builder chains span several physical lines)
-- the folded source text of the statement
+- which file and line range
+- the source text of the statement (from tree-sitter AST)
 - what kind of operation it is (pattern_type) and which direction
 - what Iceberg target it resolved to (namespace / table), or why it didn't
 
-Skipped entries (mapping marked them skip) are handled by the deterministic
-pre-pass (skill drops an "iceberg: skipped by mapping" comment above them) and
-do **not** end up in the worklist.
+Skipped entries (mapping marked them skip) are handled by the pre-pass (drops
+an "iceberg: skipped by mapping" comment above them) and do **not** end up
+in the worklist.
 
-Warn-only entries (streaming, pyarrow dataset API, ParquetFile/ParquetDataset)
-**do** go into the worklist — in hybrid mode the agent tries to rewrite them
-instead of leaving a TODO comment.
+Warn-only entries (streaming, pyarrow dataset API) **do** go into the worklist
+— the agent tries to rewrite them instead of leaving a TODO comment.
 """
 import json
 from dataclasses import asdict, dataclass

@@ -13,13 +13,12 @@ You have access to the `open-table-migrator` skill (see `skills/open_table_migra
 - A multi-table router (`targets.py`) that turns a JSON mapping of `path_glob → (namespace, table)` into a per-line resolver consumed by all transformers
 - An analyzer (`build_report`, `format_report`) for human-readable summaries
 - Filters (`filter_matches`) to scope by direction (read/write/schema), pattern type, or file glob
-- Two operating modes, selected with `--mode` on the CLI: **hybrid** (default — regex finds, agent/LLM rewrites via an `iceberg-worklist.json` artifact) and **deterministic** (regex finds *and* rewrites in place, no LLM needed).
-- Deterministic-mode transformers for pandas, PySpark, pyarrow, Java Spark, Scala Spark, and Hive SparkSQL
-- Hybrid-mode helpers: `prepass.run_prepass` (drops skip markers + the pyspark Iceberg-conf comment without touching real read/write ops) and `worklist.build_worklist` (produces the rewrite task list for the agent)
+- A pre-pass (`prepass.run_prepass`) that drops skip markers + the pyspark Iceberg-conf comment without touching real read/write ops
+- A worklist builder (`worklist.build_worklist`) that produces `iceberg-worklist.json` — the rewrite task list for you (the agent) to execute via `Edit`
 - A dependency updater (`update_dependencies`) for requirements.txt, pyproject.toml, pom.xml, build.gradle[.kts], and build.sbt — scanned recursively through nested modules
-- A CLI entry point: `python -m skills.open_table_migrator.cli <project> [--table <name> --namespace <ns>] [--mapping file] [--mode hybrid|deterministic] [--no-deps]`
+- A CLI entry point: `python -m skills.open_table_migrator.cli <project> [--table <name> --namespace <ns>] [--mapping file] [--no-deps]`
 
-The skill does **regex-based** detection. It will miss custom wrappers, dynamic dispatch, reflection, and other dynamic idioms. You (the agent) are expected to run a **manual sanity-check pass** with your own `Read`/`Grep` tools as step 2.5 to catch what the regex misses — see below.
+The skill uses **tree-sitter AST-based** detection. It will miss custom wrappers, dynamic dispatch, reflection, and other dynamic idioms. You (the agent) are expected to run a **manual sanity-check pass** with your own `Read`/`Grep` tools as step 2.5 to catch what the detector misses — see below.
 
 ## Workflow (follow in order)
 
@@ -75,7 +74,7 @@ As a manual check, `Grep` for patterns like `open(.*\.sql`, `readAllBytes.*\.sql
 
 ### 2.5. Sanity-check pass (catch what the regex detector missed)
 
-The detector is regex-based and will miss things like:
+The tree-sitter detector is AST-based but will still miss things like:
 - **Custom wrappers** around parquet/ORC calls (`def save_events(df): df.to_parquet(...)`; the caller site `save_events(df)` is invisible to the detector)
 - **Dynamic dispatch** — `getattr(df, "to_" + fmt)`, `spark.read.__getattr__(fmt)`
 - **Reflection** in JVM code (`Class.forName("...ParquetOutputFormat")`)
@@ -144,33 +143,23 @@ Also always ask:
 
 ### 4. Run the conversion
 
-The skill has **two modes**, selected with `--mode`:
+The CLI runs the AST-based detector + a pre-pass (skip-marker comments and the pyspark Iceberg-conf comment) and writes `iceberg-worklist.json` at the project root. Source files are only lightly touched by the pre-pass — the actual read/write rewrites are left for you to do via `Edit`.
 
-- **`--mode=hybrid` (default)** — regex finds, you (the LLM) rewrite. The CLI runs the detector + a deterministic pre-pass (skip-marker comments and the pyspark Iceberg-conf comment) and writes `iceberg-worklist.json` at the project root. Source files are only lightly touched by the pre-pass — the actual read/write rewrites are left for you to do by hand via `Edit`. Use this by default — it handles multi-line chains, custom wrappers, dataset APIs, and anything else the regex transformer can't do cleanly.
-- **`--mode=deterministic`** — regex finds *and* rewrites. Runs the full transformer pipeline on every hit file and writes the results in place. Pick this when the user explicitly asks for a reproducible / LLM-free pass, for a dry-run comparison, or when you have no budget for LLM token usage.
-
-**Single-table (hybrid, default):**
+**Single-table:**
 ```bash
 PYTHONPATH=. python -m skills.open_table_migrator.cli <project_path> --table <TABLE_NAME> --namespace <NAMESPACE>
 ```
 
-**Multi-table (hybrid, mapping file):**
+**Multi-table (mapping file):**
 ```bash
 PYTHONPATH=. python -m skills.open_table_migrator.cli <project_path> --mapping ./iceberg-mapping.json
 ```
 
-**Deterministic pass:**
-```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli <project_path> --mapping ./iceberg-mapping.json --mode=deterministic
-```
-
-You can combine `--mapping` with `--table/--namespace` — the CLI treats the latter as a fallback for paths that don't match any glob. Paths that resolve to no target become worklist entries with `needs_manual_target: true` (hybrid) or `TODO(iceberg): could not resolve target ...` comments (deterministic).
+You can combine `--mapping` with `--table/--namespace` — the CLI treats the latter as a fallback for paths that don't match any glob. Paths that resolve to no target become worklist entries with `needs_manual_target: true`.
 
 **Version pins and custom dependency layouts.** By default the CLI runs `update_dependencies()` on every project, which adds hardcoded versions (`pyiceberg[sql-sqlite]>=0.7.0`, `iceberg-spark-runtime-3.5_2.12:1.5.0`). If the user asked for a specific version or a non-standard artifact, pass `--no-deps` and do the build-file edits yourself via `Edit` — don't let the skill overwrite your choice with the hardcoded default.
 
-### 4b. Work the hybrid worklist
-
-This step only applies in `--mode=hybrid`. Skip it for deterministic runs.
+### 4b. Work the worklist
 
 1. `Read` `iceberg-worklist.json` at the project root. It has this shape:
    ```json
@@ -202,7 +191,7 @@ This step only applies in `--mode=hybrid`. Skip it for deterministic runs.
 5. Group edits by file — finish one file completely before moving to the next, so step 6 verification has a stable checkpoint.
 6. After all entries are rewritten, re-run the detector (`detect_parquet_usage(project_root)`) — it must return zero hits. If it doesn't, iterate until it does or explain why a residual hit is intentional.
 
-For partial migrations (specific files / directions), filter the worklist by `file` or `direction` before working through it, or fall back to invoking the transformers directly for a deterministic subset.
+For partial migrations (specific files / directions), filter the worklist by `file` or `direction` before working through it.
 
 ### 5. Review edge cases and surface TODOs
 
