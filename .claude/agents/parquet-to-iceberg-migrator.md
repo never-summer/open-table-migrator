@@ -52,6 +52,27 @@ print(format_report(report, project_root=Path(".")))
 
 If the report is empty, stop and tell the user there's nothing to migrate — **unless** the sanity-check pass below surfaces hits the regex detector missed.
 
+### 2.25. SQL file cross-reference
+
+The CLI automatically scans `.sql`, `.hql`, and `.ddl` files for `CREATE TABLE ... STORED AS PARQUET|ORC` and `CREATE TABLE ... USING parquet|orc`, then cross-references those table names with code operations (e.g. `saveAsTable("events")`, `spark.table("events")`). If a match is found, the CLI prints a cross-reference section showing which code operations target SQL-defined parquet/ORC tables.
+
+**However, it does NOT catch dynamic SQL loading** — cases like:
+```python
+ddl = open("schema.sql").read()
+spark.sql(ddl)
+```
+or
+```java
+String ddl = new String(Files.readAllBytes(Paths.get("create_tables.sql")));
+spark.sql(ddl);
+```
+
+As a manual check, `Grep` for patterns like `open(.*\.sql`, `readAllBytes.*\.sql`, `getResourceAsStream.*\.sql` across the project. If you find code that loads `.sql` files at runtime:
+1. `Read` the referenced SQL file
+2. Check if it contains `STORED AS PARQUET|ORC` or `USING parquet|orc`
+3. If yes, flag it to the user — these DDL statements need `USING iceberg` replacement too
+4. The SQL file itself is outside the detector's scope (it only scans `.py`/`.java`/`.scala`), so you must `Edit` it directly
+
 ### 2.5. Sanity-check pass (catch what the regex detector missed)
 
 The detector is regex-based and will miss things like:

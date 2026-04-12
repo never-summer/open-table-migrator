@@ -31,8 +31,9 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from .analyzer import find_ddl_references
+from .analyzer import cross_reference_sql, dedup_matches, find_ddl_references
 from .detector import detect_parquet_usage
+from .sql_registry import build_format_map, scan_sql_files
 from .deps import update_dependencies
 from .prepass import run_prepass
 from .targets import Mapping, Target, build_resolver, load_mapping
@@ -71,6 +72,12 @@ def convert_project(
     else:
         _run_deterministic(project_root, matches, table_name, namespace, mapping)
 
+    # SQL file registry: cross-reference code ops with SQL-defined parquet/orc tables
+    sql_defs = scan_sql_files(project_root)
+    fmt_map = build_format_map(sql_defs)
+    sites = dedup_matches(matches)
+    sql_xrefs = cross_reference_sql(sites, fmt_map, sql_defs)
+
     updated_deps = update_dependencies(project_root) if update_deps else []
     ddl_refs = find_ddl_references(matches, project_root)
 
@@ -82,6 +89,21 @@ def convert_project(
             print("No build files updated (none found, or all already contain Iceberg).")
     else:
         print("Deps updater skipped (--no-deps).")
+
+    if sql_xrefs:
+        print(f"\nSQL-defined tables with {len(sql_xrefs)} code cross-reference(s):")
+        for xr in sql_xrefs:
+            try:
+                code_rel = xr.site.file.relative_to(project_root)
+            except ValueError:
+                code_rel = xr.site.file
+            try:
+                sql_rel = xr.sql_file.relative_to(project_root)
+            except ValueError:
+                sql_rel = xr.sql_file
+            print(f"  {code_rel}:{xr.site.start_line}  {xr.site.direction} '{xr.sql_table}'"
+                  f"  — defined as {xr.sql_format} in {sql_rel}:{xr.sql_line}")
+        print("  These tables are migration candidates (storage format defined in SQL, not code).")
 
     if ddl_refs:
         print(f"\nSecondary references to mapped tables ({len(ddl_refs)}) — review manually:")

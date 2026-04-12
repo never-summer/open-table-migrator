@@ -305,6 +305,66 @@ def find_ddl_references(
     return refs
 
 
+@dataclass
+class SqlCrossRef:
+    """A code operation that targets a table defined as parquet/orc in a SQL file."""
+    site: OperationSite
+    sql_table: str
+    sql_format: str       # "parquet" or "orc"
+    sql_file: Path
+    sql_line: int
+
+
+def cross_reference_sql(
+    sites: list[OperationSite],
+    format_map: dict[str, str],
+    sql_defs: list | None = None,
+) -> list[SqlCrossRef]:
+    """Match operation sites against the SQL-defined table format map.
+
+    Returns cross-references where a code operation writes to / reads from a
+    table that SQL DDL defines with parquet or ORC storage — meaning the table
+    itself is a migration candidate even though the code never mentions "parquet".
+    """
+    if not format_map:
+        return []
+
+    from .sql_registry import TableDef
+
+    defs_by_name: dict[str, "TableDef"] = {}
+    if sql_defs:
+        for d in sql_defs:
+            defs_by_name[d.table_name.lower()] = d
+            if d.database:
+                defs_by_name[f"{d.database.lower()}.{d.table_name.lower()}"] = d
+
+    refs: list[SqlCrossRef] = []
+    for site in sites:
+        if not site.path_arg:
+            continue
+        arg = site.path_arg.strip().lower()
+        if "://" in arg or "/" in arg or "\\" in arg:
+            continue
+        # Try exact match, then bare table name
+        fmt = format_map.get(arg)
+        if fmt is None and "." in arg:
+            fmt = format_map.get(arg.rsplit(".", 1)[-1])
+        if fmt is None:
+            continue
+
+        td = defs_by_name.get(arg) or (
+            defs_by_name.get(arg.rsplit(".", 1)[-1]) if "." in arg else None
+        )
+        refs.append(SqlCrossRef(
+            site=site,
+            sql_table=site.path_arg,
+            sql_format=fmt,
+            sql_file=td.file if td else Path("(unknown)"),
+            sql_line=td.line if td else 0,
+        ))
+    return refs
+
+
 def format_report(report: Report, *, project_root: Path) -> str:
     if report.total == 0:
         return "No Parquet / Hive usage found."
