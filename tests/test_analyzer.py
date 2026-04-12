@@ -1,6 +1,6 @@
 from pathlib import Path
-from skills.parquet_to_iceberg.analyzer import build_report, format_report, direction_of
-from skills.parquet_to_iceberg.detector import PatternMatch
+from skills.open_table_migrator.analyzer import build_report, format_report, direction_of
+from skills.open_table_migrator.detector import PatternMatch
 
 
 def _match(file: str, pattern: str, line: int = 1) -> PatternMatch:

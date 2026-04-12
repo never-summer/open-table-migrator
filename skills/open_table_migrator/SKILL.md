@@ -1,12 +1,12 @@
 ---
-name: parquet-to-iceberg
+name: open-table-migrator
 description: Converts a Python or Java/Scala project from Parquet/ORC (including Hive and generic format() idioms) read/write to Apache Iceberg tables
 trigger: "convert parquet" OR "migrate to iceberg" OR "parquet to iceberg" OR "migrate hive to iceberg" OR "convert orc" OR "migrate orc to iceberg"
 ---
 
 # Parquet/ORC → Iceberg Conversion Skill
 
-**Announce at start:** "I'm using the parquet-to-iceberg skill to convert this project."
+**Announce at start:** "I'm using the open-table-migrator skill to convert this project."
 
 ## What This Skill Does
 
@@ -67,7 +67,7 @@ Before converting, ask:
 ### 4. Run the Conversion
 
 ```bash
-python -m skills.parquet_to_iceberg.cli <project_path> --table <TABLE_NAME> --namespace <NAMESPACE>
+python -m skills.open_table_migrator.cli <project_path> --table <TABLE_NAME> --namespace <NAMESPACE>
 ```
 
 ### 5. Review and Fix Edge Cases
@@ -228,7 +228,7 @@ Projects that touch several logical tables use a **mapping file** to route each 
 
 Run it:
 ```bash
-python -m skills.parquet_to_iceberg.cli <project> --mapping mapping.json
+python -m skills.open_table_migrator.cli <project> --mapping mapping.json
 ```
 
 In a single source file with multiple targets, the Python transformers emit one `catalog = ...` header plus one `tbl_<ns>_<name>` per target, and rewrite each call site to use the right variable. Calls whose path is a variable or doesn't match any glob (and has no fallback) become `# TODO(iceberg): could not resolve target ...` comments.

@@ -1,4 +1,4 @@
-from skills.parquet_to_iceberg.transformers.pandas import transform_pandas_file
+from skills.open_table_migrator.transformers.pandas import transform_pandas_file
 
 
 def test_transforms_read_parquet():

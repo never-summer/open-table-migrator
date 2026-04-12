@@ -1,7 +1,7 @@
 """Extended detector coverage: ORC, generic format(), USING SQL, streaming, pyarrow dataset."""
 import textwrap
 from pathlib import Path
-from skills.parquet_to_iceberg.detector import detect_parquet_usage
+from skills.open_table_migrator.detector import detect_parquet_usage
 
 
 def write(tmp_path: Path, name: str, content: str) -> Path:

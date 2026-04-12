@@ -3,9 +3,9 @@ import json
 import textwrap
 from pathlib import Path
 
-from skills.parquet_to_iceberg.detector import detect_parquet_usage
-from skills.parquet_to_iceberg.extract import extract_path_arg
-from skills.parquet_to_iceberg.targets import (
+from skills.open_table_migrator.detector import detect_parquet_usage
+from skills.open_table_migrator.extract import extract_path_arg
+from skills.open_table_migrator.targets import (
     Decision,
     Mapping,
     MappingEntry,
@@ -13,11 +13,11 @@ from skills.parquet_to_iceberg.targets import (
     build_resolver,
     load_mapping,
 )
-from skills.parquet_to_iceberg.transformers.pandas import transform_pandas_file
-from skills.parquet_to_iceberg.transformers.pyspark import transform_pyspark_file
-from skills.parquet_to_iceberg.transformers.pyarrow import transform_pyarrow_file
-from skills.parquet_to_iceberg.transformers.jvm import transform_jvm_file
-from skills.parquet_to_iceberg.cli import convert_project
+from skills.open_table_migrator.transformers.pandas import transform_pandas_file
+from skills.open_table_migrator.transformers.pyspark import transform_pyspark_file
+from skills.open_table_migrator.transformers.pyarrow import transform_pyarrow_file
+from skills.open_table_migrator.transformers.jvm import transform_jvm_file
+from skills.open_table_migrator.cli import convert_project
 
 
 # ─── extract_path_arg ─────────────────────────────────────────────────

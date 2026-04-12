@@ -1,4 +1,4 @@
-from skills.parquet_to_iceberg.transformers.jvm import transform_jvm_file
+from skills.open_table_migrator.transformers.jvm import transform_jvm_file
 
 
 def test_transforms_java_spark_read():

@@ -13,12 +13,12 @@ Modes:
                           want any LLM in the loop.
 
 Single-table usage:
-    python -m skills.parquet_to_iceberg.cli <project> --table <name> --namespace <ns>
+    python -m skills.open_table_migrator.cli <project> --table <name> --namespace <ns>
 
 Multi-table usage (mapping file):
-    python -m skills.parquet_to_iceberg.cli <project> --mapping mapping.json
+    python -m skills.open_table_migrator.cli <project> --mapping mapping.json
 
-    mapping.json — see skills/parquet_to_iceberg/targets.py for format.
+    mapping.json — see skills/open_table_migrator/targets.py for format.
     You can still pass --table/--namespace alongside --mapping as a fallback
     for paths that don't match any glob.
 

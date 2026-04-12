@@ -20,7 +20,7 @@ def _run_cli(
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_ROOT)
     return subprocess.run(
-        [sys.executable, "-m", "skills.parquet_to_iceberg.cli",
+        [sys.executable, "-m", "skills.open_table_migrator.cli",
          str(project), "--table", table, "--namespace", namespace, f"--mode={mode}"],
         capture_output=True, text=True, env=env,
     )

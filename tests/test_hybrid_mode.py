@@ -3,16 +3,16 @@ import json
 import textwrap
 from pathlib import Path
 
-from skills.parquet_to_iceberg.cli import convert_project
-from skills.parquet_to_iceberg.detector import detect_parquet_usage
-from skills.parquet_to_iceberg.prepass import run_prepass
-from skills.parquet_to_iceberg.targets import (
+from skills.open_table_migrator.cli import convert_project
+from skills.open_table_migrator.detector import detect_parquet_usage
+from skills.open_table_migrator.prepass import run_prepass
+from skills.open_table_migrator.targets import (
     Mapping,
     MappingEntry,
     Target,
     build_resolver,
 )
-from skills.parquet_to_iceberg.worklist import build_worklist, write_worklist
+from skills.open_table_migrator.worklist import build_worklist, write_worklist
 
 
 # ─── Prepass: skip markers and pyspark conf comment ──────────────────
@@ -199,7 +199,7 @@ def test_cli_hybrid_mode_runs_prepass_for_skip_markers(tmp_path: Path):
     mapping_path.write_text(json.dumps({
         "tables": [{"path_glob": "s3://legacy/*", "skip": True}],
     }))
-    from skills.parquet_to_iceberg.targets import load_mapping
+    from skills.open_table_migrator.targets import load_mapping
     mapping = load_mapping(mapping_path)
     convert_project(proj, mapping=mapping, mode="hybrid")
     out = (proj / "etl.py").read_text()

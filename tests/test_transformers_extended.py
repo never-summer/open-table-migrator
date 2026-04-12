@@ -1,8 +1,8 @@
 """Transformer coverage for ORC, format(), USING SQL, streaming, pyarrow dataset."""
-from skills.parquet_to_iceberg.transformers.pandas import transform_pandas_file
-from skills.parquet_to_iceberg.transformers.pyspark import transform_pyspark_file
-from skills.parquet_to_iceberg.transformers.pyarrow import transform_pyarrow_file
-from skills.parquet_to_iceberg.transformers.jvm import transform_jvm_file
+from skills.open_table_migrator.transformers.pandas import transform_pandas_file
+from skills.open_table_migrator.transformers.pyspark import transform_pyspark_file
+from skills.open_table_migrator.transformers.pyarrow import transform_pyarrow_file
+from skills.open_table_migrator.transformers.jvm import transform_jvm_file
 
 
 # ─── Pandas ORC ───────────────────────────────────────────────────────

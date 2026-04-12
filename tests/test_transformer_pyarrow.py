@@ -1,4 +1,4 @@
-from skills.parquet_to_iceberg.transformers.pyarrow import transform_pyarrow_file
+from skills.open_table_migrator.transformers.pyarrow import transform_pyarrow_file
 
 
 def test_transforms_pq_read_table():

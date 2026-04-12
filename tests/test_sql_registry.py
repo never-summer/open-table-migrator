@@ -2,9 +2,9 @@
 import textwrap
 from pathlib import Path
 
-from skills.parquet_to_iceberg.analyzer import cross_reference_sql, dedup_matches
-from skills.parquet_to_iceberg.detector import detect_parquet_usage
-from skills.parquet_to_iceberg.sql_registry import (
+from skills.open_table_migrator.analyzer import cross_reference_sql, dedup_matches
+from skills.open_table_migrator.detector import detect_parquet_usage
+from skills.open_table_migrator.sql_registry import (
     TableDef,
     build_format_map,
     scan_sql_files,

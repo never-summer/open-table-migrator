@@ -1,5 +1,5 @@
 from pathlib import Path
-from skills.parquet_to_iceberg.deps import update_dependencies
+from skills.open_table_migrator.deps import update_dependencies
 
 
 def test_adds_pyiceberg_to_requirements_txt(tmp_path):

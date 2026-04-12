@@ -1,4 +1,4 @@
-from skills.parquet_to_iceberg.transformers.pyspark import transform_pyspark_file
+from skills.open_table_migrator.transformers.pyspark import transform_pyspark_file
 
 
 def test_transforms_spark_read_parquet():

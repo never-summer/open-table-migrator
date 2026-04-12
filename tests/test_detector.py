@@ -1,6 +1,6 @@
 import textwrap
 from pathlib import Path
-from skills.parquet_to_iceberg.detector import detect_parquet_usage, PatternMatch
+from skills.open_table_migrator.detector import detect_parquet_usage, PatternMatch
 
 
 def write_file(tmp_path: Path, name: str, content: str) -> Path:

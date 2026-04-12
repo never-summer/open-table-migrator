@@ -3,14 +3,14 @@ import json
 import textwrap
 from pathlib import Path
 
-from skills.parquet_to_iceberg.analyzer import find_ddl_references
-from skills.parquet_to_iceberg.cli import convert_project
-from skills.parquet_to_iceberg.deps import update_dependencies
-from skills.parquet_to_iceberg.detector import detect_parquet_usage
-from skills.parquet_to_iceberg.folding import fold_chains
-from skills.parquet_to_iceberg.transformers.pandas import transform_pandas_file
-from skills.parquet_to_iceberg.transformers.pyarrow import transform_pyarrow_file
-from skills.parquet_to_iceberg.transformers.pyspark import transform_pyspark_file
+from skills.open_table_migrator.analyzer import find_ddl_references
+from skills.open_table_migrator.cli import convert_project
+from skills.open_table_migrator.deps import update_dependencies
+from skills.open_table_migrator.detector import detect_parquet_usage
+from skills.open_table_migrator.folding import fold_chains
+from skills.open_table_migrator.transformers.pandas import transform_pandas_file
+from skills.open_table_migrator.transformers.pyarrow import transform_pyarrow_file
+from skills.open_table_migrator.transformers.pyspark import transform_pyspark_file
 
 
 # ─── A2 / A3: multi-line JVM chain folding ───────────────────────────
