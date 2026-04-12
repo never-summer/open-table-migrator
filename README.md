@@ -10,6 +10,8 @@ Skill + субагент для Claude Code.
 | **Миграция** | Parquet / ORC → Iceberg (протестировано), архитектура — any → any |
 | **Целевые форматы** | Iceberg сейчас, Paimon / Delta / Hudi / итд планируются |
 
+![I/O detection and migration](docs/assets/open_table_migrator_io_v3.svg)
+
 ---
 
 ## Возможности
