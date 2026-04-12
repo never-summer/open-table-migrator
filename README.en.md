@@ -16,6 +16,73 @@ Analyzes data projects in **Python, Java, and Scala** (extensible): finds all da
 
 ---
 
+## Quick Start
+
+### Option 1: Subagent in Claude Code
+
+Just ask the agent:
+
+> *grab the skill from https://github.com/never-summer/open-table-migrator and let's check the LearningSparkV2 project — run an I/O analysis*
+
+The agent picks up the skill, runs the detector, and returns a report. Example output on [LearningSparkV2](https://github.com/databricks/LearningSparkV2):
+
+> **Found 11 I/O operations across 7 files.**
+>
+> By direction: **reads = 7**, **writes = 4**
+>
+> | Pattern type | Count | Direction |
+> |---|---|---|
+> | `spark_read_csv` | 3 | read |
+> | `spark_read_table` | 2 | read |
+> | `hive_save_table` | 2 | write |
+> | `spark_read_parquet` | 1 | read |
+> | `spark_read_json` | 1 | read |
+> | `pandas_write_csv` | 1 | write |
+> | `stdlib_write_csv` | 1 | write |
+>
+> **Iceberg migration candidates (format-dependent):**
+>
+> - `chapter7/scala/.../SortMergeJoinBucketed_7_6.scala:54` — `write.format("parquet")...saveAsTable("UsersTbl")` + `.bucketBy(8,"uid")`
+> - `chapter7/scala/.../SortMergeJoinBucketed_7_6.scala:62` — `write.format("parquet")...saveAsTable("OrdersTbl")` + `.bucketBy(8,"users_id")`
+> - `mlflow-project-example/train.py:24` — `spark.read.parquet(file_path)` (airbnb dataset)
+
+The agent then asks about each table — migrate or skip, which namespace/table — and emits `lakehouse-worklist.json` for the LLM to rewrite the code. Afterwards it reruns the detector: zero residual patterns.
+
+The [subagent](.claude/agents/open-table-migrator.md) does all of this automatically from a single prompt: *"migrate this project to iceberg"*.
+
+### Option 2: CLI (no LLM)
+
+Project analysis:
+
+```bash
+PYTHONPATH=. python -c "
+from pathlib import Path
+from skills.open_table_migrator.detector import detect_all_io
+from skills.open_table_migrator.analyzer import build_report, format_report
+
+matches = detect_all_io(Path('path/to/project'))
+print(format_report(build_report(matches), project_root=Path('path/to/project')))
+"
+```
+
+Single-table migration — emits `lakehouse-worklist.json`:
+
+```bash
+PYTHONPATH=. python -m skills.open_table_migrator.cli path/to/project \
+    --table events --namespace analytics
+```
+
+Multi-table migration:
+
+```bash
+PYTHONPATH=. python -m skills.open_table_migrator.cli path/to/project \
+    --mapping ./lakehouse-mapping.json
+```
+
+Mapping format — see [SKILL.md](skills/open_table_migrator/SKILL.md#multi-table-projects).
+
+---
+
 ## Features
 
 ### I/O Inventory
@@ -44,114 +111,6 @@ Converts:
 ### SQL Registry
 
 Scans `.sql`/`.hql`/`.ddl` files, finds `CREATE TABLE ... STORED AS FORMAT`, and cross-references with code — when code writes to a table via `saveAsTable("events")` but the format is defined in a separate SQL file.
-
----
-
-## Quick Start
-
-### Option 1: Subagent in Claude Code
-
-Say:
-
-> *"analyze all reads and writes in the project"*
-> *"migrate to iceberg"*
-
-The [subagent](.claude/agents/open-table-migrator.md) will automatically:
-1. Run the detector and show a table of all I/O operations
-2. Scan SQL files and show cross-references
-3. Ask which tables to migrate and which to skip
-4. Execute the migration via worklist
-5. Verify the result — detector should return zero residual patterns
-
-### Option 2: CLI
-
-Analysis (no LLM):
-
-```bash
-PYTHONPATH=. python -c "
-from pathlib import Path
-from skills.open_table_migrator.detector import detect_all_io
-from skills.open_table_migrator.analyzer import build_report, format_report
-
-matches = detect_all_io(Path('path/to/project'))
-print(format_report(build_report(matches), project_root=Path('path/to/project')))
-"
-```
-
-Migration (single table — produces `lakehouse-worklist.json`):
-
-```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli path/to/project \
-    --table events --namespace analytics
-```
-
-Migration (multiple tables):
-
-```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli path/to/project \
-    --mapping ./lakehouse-mapping.json
-```
-
-Mapping format — see [SKILL.md](skills/open_table_migrator/SKILL.md#multi-table-projects).
-
----
-
-## Example: LearningSparkV2
-
-[LearningSparkV2](https://github.com/databricks/LearningSparkV2) — examples from the *Learning Spark* book, ~30 Scala/Java/Python files with diverse Spark I/O.
-
-### Step 1: Analysis
-
-```
-> analyze all reads and writes in LearningSparkV2
-```
-
-The detector finds ~25 operations across 12 files:
-
-```
-Found 25 data I/O operation(s) across 12 file(s):
-
-By direction:
-  read   : 11
-  write  : 12
-  schema :  2
-
-Per-file breakdown:
-  chapter04/scala/src/main/scala/SparkJob.scala:
-    spark_write_parquet  (write)  line 54:59
-      usersDF — writes Parquet to UsersTbl [bucketBy(8, "uid"), partitionBy("region")]
-    spark_read_parquet   (read)   line 62:62
-      logsDF — reads Parquet from s3://bucket/logs
-  ...
-```
-
-Plus cross-references with SQL:
-
-```
-SQL-defined tables with 2 code cross-reference(s):
-  SparkJob.scala:57  write 'UsersTbl'  — defined as parquet in schema.sql:3
-  SparkJob.scala:72  write 'EventsTbl' — defined as parquet in schema.sql:8
-```
-
-### Step 2: Per-table decisions
-
-The agent asks for each sink/source:
-
-> *Operation `write` on `UsersTbl` (2 call sites) — migrate to Iceberg? Namespace/table?*
-
-User responds:
-- `UsersTbl` → `analytics.users`
-- `EventsTbl` → `analytics.events`
-- `s3://bucket/logs` → keep as-is (`skip: true`)
-
-### Step 3: Migration
-
-```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli ./LearningSparkV2 \
-    --mapping lakehouse-mapping.json
-```
-
-The CLI produces `lakehouse-worklist.json` with tasks for the agent. The agent rewrites each operation via `Edit`, then reruns the detector — zero residual patterns.
 
 ---
 
