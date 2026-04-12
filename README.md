@@ -25,9 +25,9 @@ Skill + субагент для Claude Code.
 
 Таксономия pattern_type: `{runtime}_{direction}_{format}` (напр. `spark_read_parquet`, `pandas_write_csv`).
 
-### Миграция → Iceberg
+### Миграция → Lakehouse
 
-AST-детектор находит операции, CLI выдает `iceberg-worklist.json`, агент/LLM переписывает код.
+AST-детектор находит операции, CLI выдает `lakehouse-worklist.json`, агент/LLM переписывает код.
 
 Конвертирует:
 
@@ -75,7 +75,7 @@ print(format_report(build_report(matches), project_root=Path('путь/к/про
 "
 ```
 
-Миграция (одна таблица — выдает `iceberg-worklist.json`):
+Миграция (одна таблица — выдает `lakehouse-worklist.json`):
 
 ```bash
 PYTHONPATH=. python -m skills.open_table_migrator.cli путь/к/проекту \
@@ -148,7 +148,7 @@ PYTHONPATH=. python -m skills.open_table_migrator.cli ./LearningSparkV2 \
     --mapping iceberg-mapping.json
 ```
 
-CLI выдает `iceberg-worklist.json` с задачами для агента. Агент переписывает каждую операцию через `Edit`, затем перезапускает детектор — ноль остаточных паттернов.
+CLI выдает `lakehouse-worklist.json` с задачами для агента. Агент переписывает каждую операцию через `Edit`, затем перезапускает детектор — ноль остаточных паттернов.
 
 ---
 
@@ -176,7 +176,7 @@ skills/open_table_migrator/
 ├── targets.py            # Мульти-таблица: маппинг, резолвер
 ├── deps.py               # Обновление зависимостей (5 форматов)
 ├── prepass.py            # Skip-маркеры + pyspark conf
-├── worklist.py           # iceberg-worklist.json (hybrid)
+├── worklist.py           # lakehouse-worklist.json (hybrid)
 ├── cli.py                # CLI entry point
 └── transformers/
     ├── pandas.py

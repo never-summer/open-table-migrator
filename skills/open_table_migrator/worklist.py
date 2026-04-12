@@ -170,8 +170,8 @@ def build_worklist(
 
 
 def write_worklist(entries: list[WorklistEntry], project_root: Path) -> Path:
-    """Write ``iceberg-worklist.json`` at project root. Returns the path."""
-    out = project_root / "iceberg-worklist.json"
+    """Write ``lakehouse-worklist.json`` at project root. Returns the path."""
+    out = project_root / "lakehouse-worklist.json"
     payload = {
         "version": 1,
         "count": len(entries),

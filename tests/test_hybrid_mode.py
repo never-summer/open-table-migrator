@@ -157,7 +157,7 @@ def test_worklist_file_is_written_with_relative_paths(tmp_path: Path):
     resolver = build_resolver(None, fallback=Target("default", "events"))
     entries = build_worklist(matches, tmp_path, resolver)
     path = write_worklist(entries, tmp_path)
-    assert path == tmp_path / "iceberg-worklist.json"
+    assert path == tmp_path / "lakehouse-worklist.json"
     data = json.loads(path.read_text())
     assert data["version"] == 1
     assert data["count"] == 1
@@ -178,9 +178,9 @@ def test_cli_hybrid_mode_writes_worklist_and_leaves_reads_untouched(
     assert rc == 0
     out = capsys.readouterr().out
     assert "Hybrid mode" in out
-    assert "iceberg-worklist.json" in out
+    assert "lakehouse-worklist.json" in out
     # Worklist exists
-    wl = proj / "iceberg-worklist.json"
+    wl = proj / "lakehouse-worklist.json"
     assert wl.exists()
     data = json.loads(wl.read_text())
     assert data["count"] == 1
@@ -207,7 +207,7 @@ def test_cli_hybrid_mode_runs_prepass_for_skip_markers(tmp_path: Path):
     assert "iceberg: skipped by mapping" in out
     assert 'pd.read_parquet("s3://legacy/old.parquet")' in out
     # Worklist has zero entries (the only match was skipped)
-    data = json.loads((proj / "iceberg-worklist.json").read_text())
+    data = json.loads((proj / "lakehouse-worklist.json").read_text())
     assert data["count"] == 0
 
 
@@ -247,4 +247,4 @@ def test_cli_always_produces_worklist(tmp_path: Path, capsys):
     convert_project(proj, table_name="events", namespace="default")
     out = capsys.readouterr().out
     assert "rewrite task" in out
-    assert (proj / "iceberg-worklist.json").exists()
+    assert (proj / "lakehouse-worklist.json").exists()

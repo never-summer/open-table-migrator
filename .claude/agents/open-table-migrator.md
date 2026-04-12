@@ -14,7 +14,7 @@ You have access to the `open-table-migrator` skill (see `skills/open_table_migra
 - An analyzer (`build_report`, `format_report`) for human-readable summaries
 - Filters (`filter_matches`) to scope by direction (read/write/schema), pattern type, or file glob
 - A pre-pass (`prepass.run_prepass`) that drops skip markers + the pyspark Iceberg-conf comment without touching real read/write ops
-- A worklist builder (`worklist.build_worklist`) that produces `iceberg-worklist.json` — the rewrite task list for you (the agent) to execute via `Edit`
+- A worklist builder (`worklist.build_worklist`) that produces `lakehouse-worklist.json` — the rewrite task list for you (the agent) to execute via `Edit`
 - A dependency updater (`update_dependencies`) for requirements.txt, pyproject.toml, pom.xml, build.gradle[.kts], and build.sbt — scanned recursively through nested modules
 - A CLI entry point: `python -m skills.open_table_migrator.cli <project> [--table <name> --namespace <ns>] [--mapping file] [--no-deps]`
 
@@ -143,7 +143,7 @@ Also always ask:
 
 ### 4. Run the conversion
 
-The CLI runs the AST-based detector + a pre-pass (skip-marker comments and the pyspark Iceberg-conf comment) and writes `iceberg-worklist.json` at the project root. Source files are only lightly touched by the pre-pass — the actual read/write rewrites are left for you to do via `Edit`.
+The CLI runs the AST-based detector + a pre-pass (skip-marker comments and the pyspark Iceberg-conf comment) and writes `lakehouse-worklist.json` at the project root. Source files are only lightly touched by the pre-pass — the actual read/write rewrites are left for you to do via `Edit`.
 
 **Single-table:**
 ```bash
@@ -161,7 +161,7 @@ You can combine `--mapping` with `--table/--namespace` — the CLI treats the la
 
 ### 4b. Work the worklist
 
-1. `Read` `iceberg-worklist.json` at the project root. It has this shape:
+1. `Read` `lakehouse-worklist.json` at the project root. It has this shape:
    ```json
    {
      "version": 1,

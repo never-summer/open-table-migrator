@@ -33,7 +33,7 @@ def test_converts_pandas_fixture(tmp_path):
     result = _run_cli(project)
     assert result.returncode == 0, result.stderr
 
-    worklist = json.loads((project / "iceberg-worklist.json").read_text())
+    worklist = json.loads((project / "lakehouse-worklist.json").read_text())
     assert worklist["count"] >= 1
     assert any("pandas" in e["pattern_type"] for e in worklist["entries"])
 
@@ -48,7 +48,7 @@ def test_converts_java_spark_fixture(tmp_path):
     result = _run_cli(project)
     assert result.returncode == 0, result.stderr
 
-    worklist = json.loads((project / "iceberg-worklist.json").read_text())
+    worklist = json.loads((project / "lakehouse-worklist.json").read_text())
     assert worklist["count"] >= 1
     assert any("spark" in e["pattern_type"] for e in worklist["entries"])
 
@@ -63,7 +63,7 @@ def test_converts_java_hive_fixture(tmp_path):
     result = _run_cli(project)
     assert result.returncode == 0, result.stderr
 
-    worklist = json.loads((project / "iceberg-worklist.json").read_text())
+    worklist = json.loads((project / "lakehouse-worklist.json").read_text())
     assert worklist["count"] >= 1
     assert any("hive" in e["pattern_type"] for e in worklist["entries"])
 

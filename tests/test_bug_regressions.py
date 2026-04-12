@@ -45,7 +45,7 @@ def test_cli_reports_worklist_for_detected_file(tmp_path: Path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "rewrite task" in out
-    assert (proj / "iceberg-worklist.json").exists()
+    assert (proj / "lakehouse-worklist.json").exists()
 
 
 def test_cli_reports_no_build_files_found(tmp_path: Path, capsys):

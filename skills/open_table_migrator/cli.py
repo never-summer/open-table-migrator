@@ -1,6 +1,6 @@
 """
 The CLI runs the AST-based detector, a pre-pass (skip markers + pyspark conf
-comment), and emits ``iceberg-worklist.json`` at the project root for the
+comment), and emits ``lakehouse-worklist.json`` at the project root for the
 agent/LLM to consume.
 
 Single-table usage:
@@ -97,7 +97,7 @@ def convert_project(
         print("  NOTE: DROP/TRUNCATE still work on Iceberg; CACHE/UNCACHE/REFRESH semantics differ.")
 
     print("\nNext steps:")
-    print("  1. Open iceberg-worklist.json and rewrite each entry by hand.")
+    print("  1. Open lakehouse-worklist.json and rewrite each entry by hand.")
     print("  2. Re-run detector to verify zero residual matches.")
     return 0
 
