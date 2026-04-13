@@ -65,7 +65,7 @@ _WRITE_TYPES = _OLD_WRITE_TYPES
 _SCHEMA_TYPES = _OLD_SCHEMA_TYPES
 
 
-# Patterns for which transformers only emit a TODO comment (not a full rewrite)
+# Patterns that emit a warn-only TODO in the worklist (streaming, pyarrow datasets)
 _WARN_ONLY_TYPES = {
     "pyspark_stream_read", "pyspark_stream_read_fmt",
     "pyspark_stream_write", "pyspark_stream_write_fmt",

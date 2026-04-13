@@ -118,7 +118,7 @@ AST-детектор находит операции, CLI выдает `lakehous
 PYTHONPATH=. pytest tests/ --ignore=tests/fixtures -v
 ```
 
-236 тестов. Фикстуры в `tests/fixtures/` — входные данные, не тестовые модули.
+179 тестов. Фикстуры в `tests/fixtures/` — входные данные, не тестовые модули.
 
 ## Структура
 
@@ -131,18 +131,12 @@ skills/open_table_migrator/
 ├── analyzer.py           # Отчеты, дедупликация, SQL кросс-ссылки
 ├── sql_registry.py       # Реестр таблиц из .sql/.hql/.ddl
 ├── extract.py            # Извлечение path_arg, subject, описания
-├── folding.py            # Склейка многострочных цепочек (только для JVM-трансформера)
 ├── filters.py            # Фильтрация по направлению/паттерну/glob
 ├── targets.py            # Мульти-таблица: маппинг, резолвер
 ├── deps.py               # Обновление зависимостей (5 форматов)
 ├── prepass.py            # Skip-маркеры + pyspark conf
-├── worklist.py           # lakehouse-worklist.json (hybrid)
-├── cli.py                # CLI entry point
-└── transformers/
-    ├── pandas.py
-    ├── pyspark.py
-    ├── pyarrow.py
-    └── jvm.py            # Java + Scala
+├── worklist.py           # lakehouse-worklist.json builder
+└── cli.py                # CLI entry point
 
 .claude/agents/
 └── open-table-migrator.md  # Субагент

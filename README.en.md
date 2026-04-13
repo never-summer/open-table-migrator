@@ -120,7 +120,7 @@ Scans `.sql`/`.hql`/`.ddl` files, finds `CREATE TABLE ... STORED AS FORMAT`, and
 PYTHONPATH=. pytest tests/ --ignore=tests/fixtures -v
 ```
 
-236 tests. Fixtures in `tests/fixtures/` are input data, not test modules.
+179 tests. Fixtures in `tests/fixtures/` are input data, not test modules.
 
 ## Structure
 
@@ -133,18 +133,12 @@ skills/open_table_migrator/
 ├── analyzer.py           # Reports, deduplication, SQL cross-references
 ├── sql_registry.py       # Table registry from .sql/.hql/.ddl
 ├── extract.py            # path_arg, subject, summary extraction
-├── folding.py            # Multi-line chain folding (JVM transformer only)
 ├── filters.py            # Filter by direction/pattern/glob
 ├── targets.py            # Multi-table: mapping, resolver
 ├── deps.py               # Dependency updater (5 formats)
 ├── prepass.py            # Skip markers + pyspark conf
 ├── worklist.py           # lakehouse-worklist.json builder
-├── cli.py                # CLI entry point
-└── transformers/
-    ├── pandas.py
-    ├── pyspark.py
-    ├── pyarrow.py
-    └── jvm.py            # Java + Scala
+└── cli.py                # CLI entry point
 
 .claude/agents/
 └── open-table-migrator.md  # Subagent

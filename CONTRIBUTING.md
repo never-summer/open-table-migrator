@@ -20,9 +20,8 @@ Test fixtures in `tests/fixtures/` are sample projects used as input data.
 
 ## Project Structure
 
-- `skills/open_table_migrator/` — core skill code
-- `skills/open_table_migrator/transformers/` — per-runtime rewrite logic
-- `tests/` — test suite (236 tests)
+- `skills/open_table_migrator/` — core skill code (detector, analyzer, worklist, CLI)
+- `tests/` — test suite (179 tests)
 - `.claude/agents/` — Claude Code subagent definition
 
 ## How to Contribute
@@ -46,9 +45,8 @@ The tree-sitter detector (`ts_detector.py`) extracts formats dynamically from AS
 
 The architecture supports any-to-any migration. To add a new target (e.g. Delta, Paimon):
 
-1. Add a new transformer in `skills/open_table_migrator/transformers/`
-2. Wire it in the CLI (`cli.py`)
-3. Update `SKILL.md` with conversion reference tables
+1. Extend `worklist.py` to emit target-specific rewrite hints
+2. Update `SKILL.md` with conversion reference tables the LLM rewriter follows
 
 ### Adding a New Language
 
@@ -68,7 +66,7 @@ The architecture supports any-to-any migration. To add a new target (e.g. Delta,
 
 1. Fork and create a feature branch
 2. Add tests for new functionality
-3. Ensure all 236+ tests pass
+3. Ensure all 179+ tests pass
 4. Submit a PR with a clear description
 
 ## License
