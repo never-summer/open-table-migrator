@@ -241,6 +241,74 @@ python -m skills.open_table_migrator.cli <project> --mapping mapping.json
 
 In a single source file with multiple targets, the Python transformers emit one `catalog = ...` header plus one `tbl_<ns>_<name>` per target, and rewrite each call site to use the right variable. Calls whose path is a variable or doesn't match any glob (and has no fallback) become `# TODO(iceberg): could not resolve target ...` comments.
 
+## Post-Migration Operational Concerns
+
+The skill rewrites **code**, not the operational model of the tables. After the migration lands, surface these three questions to the user — they change how the tables behave in production.
+
+### 1. Format version & write mode (Copy-on-Write vs Merge-on-Read)
+
+MoR/CoW is a **table property**, not a code choice. `INSERT` / `append` / `overwritePartitions()` are unaffected — the mode only changes how `UPDATE` / `DELETE` / `MERGE INTO` materialize changes.
+
+```sql
+ALTER TABLE ns.events SET TBLPROPERTIES (
+  'format-version'       = '2',               -- required for MoR
+  'write.update.mode'    = 'merge-on-read',   -- or 'copy-on-write'
+  'write.delete.mode'    = 'merge-on-read',
+  'write.merge.mode'     = 'merge-on-read'
+);
+```
+
+| | Copy-on-Write (default pre-v2) | Merge-on-Read (v2) |
+|---|---|---|
+| What is written on UPDATE/DELETE | Fully rewritten data files | Original files + position/equality delete files |
+| Write latency | High (rewrite partition) | Low |
+| Read latency | Low | Higher — reader applies deletes on the fly |
+| Use when | Rare updates, read-heavy analytics | Frequent upserts, CDC, streaming |
+
+Ask the user whether the table has row-level mutations before defaulting; if it does, MoR + v2 is usually the right pick.
+
+### 2. Compaction
+
+Iceberg compaction is a **procedure call**, not a background process. Nothing auto-compacts unless the user runs one of:
+
+```sql
+-- Bin-pack or sort small files, apply pending deletes (for MoR)
+CALL catalog.system.rewrite_data_files(
+  table   => 'ns.events',
+  strategy => 'binpack',
+  options => map('min-input-files','5','target-file-size-bytes','536870912')
+);
+
+-- Compact the manifest list (speeds up scan planning)
+CALL catalog.system.rewrite_manifests('ns.events');
+```
+
+**Where it runs:** any Spark session with `iceberg-spark-runtime` and catalog access. Typical deployment patterns:
+
+- **Airflow / Dagster DAG** — scheduled `rewrite_data_files` every N hours
+- **Streaming job post-hook** — compact after each micro-batch commit window
+- **Managed catalog** — Tabular, Snowflake Polaris, AWS Glue and Dremio can run compaction for you; no user job needed
+- **Ad-hoc cron** — plain `spark-submit` on a schedule
+
+Compaction does not block writers — it creates a new snapshot and the old files remain until expiration.
+
+### 3. Snapshot expiration & orphan cleanup
+
+Iceberg keeps old snapshots forever unless told otherwise. Two calls every user should schedule (usually together with `rewrite_data_files`):
+
+```sql
+CALL catalog.system.expire_snapshots(
+  table => 'ns.events',
+  older_than => TIMESTAMP '2026-04-01 00:00:00'
+);
+
+CALL catalog.system.remove_orphan_files(table => 'ns.events');
+```
+
+Without this the catalog grows unboundedly and old data files never get GC'd.
+
+**Note:** none of these procedures are written by the skill. They are a deployment concern — mention them after the rewrite is green, and let the user wire them into whatever scheduler they already use.
+
 ## Known Limitations
 
 - **FQN propagation on read sites** — after rewriting `saveAsTable("Foo")` → `writeTo("ns.Foo")`, every downstream reference to the bare name (`spark.table("Foo")`, `CACHE TABLE Foo`, `SELECT ... FROM Foo`, `DROP TABLE Foo`) must be updated to the fully-qualified `ns.Foo`. Otherwise those calls resolve through the default session catalog and miss the Iceberg table entirely. The detector reports these reads, but the worklist does not automatically bind them to the write-site rewrite — walk each `spark_read_table` / SparkSQL match in the same file and rename by hand.
