@@ -2,8 +2,9 @@
 
 Scope: per method body, track local variable assignments and DTO field
 writes. Emits 'transform' edges between code.var.* nodes and code.var.<obj>.<field>
-nodes. No type resolution — assumes the AST shape is local enough for
-useful signal.
+nodes. Recognizes getter method calls (e.g. record.getEmail()) when the
+target class is in the SymbolTable and resolves them to the corresponding
+DTO field.
 
 Confidence: every edge from this pass is at most 'medium'. graph_build
 upgrades to 'high' when sql_parse already produced a high-confidence
@@ -30,7 +31,7 @@ def run(project_root: Path, symbols: SymbolTable, units: list[SqlUnit]) -> list[
         source = path.read_bytes()
         tree = parse_java(source)
         for method in _iter_methods(tree.root_node):
-            edges.extend(_method_edges(method, source, rel))
+            edges.extend(_method_edges(method, source, rel, symbols))
     return edges
 
 
@@ -41,11 +42,12 @@ def _iter_methods(node):
         yield from _iter_methods(child)
 
 
-def _method_edges(method, source: bytes, file: str) -> list[Edge]:
+def _method_edges(method, source: bytes, file: str, symbols: SymbolTable) -> list[Edge]:
     body = method.child_by_field_name("body")
     if body is None:
         return []
     edges: list[Edge] = []
+    getter_index = _build_getter_index(symbols)
 
     for stmt in _iter_statements(body):
         if stmt.type == "local_variable_declaration":
@@ -57,7 +59,7 @@ def _method_edges(method, source: bytes, file: str) -> list[Edge]:
                 if target_n is None or value_n is None:
                     continue
                 tgt = source[target_n.start_byte:target_n.end_byte].decode()
-                src = _expr_source(value_n, source)
+                src = _expr_source(value_n, source, getter_index)
                 if src is None:
                     continue
                 edges.append(_edge(file, stmt, src, f"code.var.{tgt}"))
@@ -70,12 +72,21 @@ def _method_edges(method, source: bytes, file: str) -> list[Edge]:
                 if left_n is None or right_n is None:
                     continue
                 tgt = _lhs_id(left_n, source)
-                src = _expr_source(right_n, source)
+                src = _expr_source(right_n, source, getter_index)
                 if tgt is None or src is None:
                     continue
                 edges.append(_edge(file, stmt, src, tgt))
 
     return edges
+
+
+def _build_getter_index(symbols: SymbolTable) -> dict[str, str]:
+    """Return getter-name → field-name across all known DTOs (last writer wins)."""
+    idx: dict[str, str] = {}
+    for dto in symbols.classes.values():
+        for getter, field in dto.getter_to_field.items():
+            idx[getter] = field
+    return idx
 
 
 def _iter_statements(node):
@@ -98,7 +109,7 @@ def _lhs_id(node, source: bytes) -> str | None:
     return None
 
 
-def _expr_source(node, source: bytes) -> str | None:
+def _expr_source(node, source: bytes, getter_index: dict[str, str]) -> str | None:
     if node.type == "identifier":
         return f"code.var.{source[node.start_byte:node.end_byte].decode()}"
     if node.type == "field_access":
@@ -108,6 +119,15 @@ def _expr_source(node, source: bytes) -> str | None:
             obj = source[obj_n.start_byte:obj_n.end_byte].decode()
             field = source[field_n.start_byte:field_n.end_byte].decode()
             return f"code.var.{obj}.{field}"
+    if node.type == "method_invocation":
+        obj_n = node.child_by_field_name("object")
+        name_n = node.child_by_field_name("name")
+        if obj_n is None or name_n is None:
+            return None
+        method = source[name_n.start_byte:name_n.end_byte].decode()
+        if method in getter_index:
+            obj = source[obj_n.start_byte:obj_n.end_byte].decode()
+            return f"code.var.{obj}.{getter_index[method]}"
     return None
 
 
