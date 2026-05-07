@@ -14,7 +14,7 @@ def test_local_var_assignment_creates_transform_edge(tmp_path: Path):
             }
         }
     '''))
-    edges, _, _ = java_dfa.run(tmp_path, scan_project(tmp_path), [])
+    edges, _, _, _ = java_dfa.run(tmp_path, scan_project(tmp_path), [])
     pairs = {(e.src_id, e.dst_id) for e in edges}
     assert ("code.var.email", "code.var.forwarded") in pairs
 
@@ -28,7 +28,7 @@ def test_dto_field_assignment_emits_edge(tmp_path: Path):
             }
         }
     '''))
-    edges, _, _ = java_dfa.run(tmp_path, scan_project(tmp_path), [])
+    edges, _, _, _ = java_dfa.run(tmp_path, scan_project(tmp_path), [])
     assert any(e.src_id == "code.var.userEmail" and e.dst_id.endswith("ev.email") for e in edges)
 
 
@@ -45,5 +45,5 @@ def test_getter_call_resolves_to_dto_field(tmp_path: Path):
             }
         }
     '''))
-    edges, _, _ = java_dfa.run(tmp_path, scan_project(tmp_path), [])
+    edges, _, _, _ = java_dfa.run(tmp_path, scan_project(tmp_path), [])
     assert any(e.src_id == "code.var.client.email" and e.dst_id == "code.var.e" for e in edges)

@@ -27,6 +27,7 @@ def run(
     kafka_sites: list[KafkaSite] | None = None,
     rest_sites: list[RestSite] | None = None,
     unresolved: list[Unresolved] | None = None,
+    var_types: dict[str, str] | None = None,
 ) -> Graph:
     g = Graph()
     g.unresolved.extend(unresolved or [])
@@ -40,7 +41,7 @@ def run(
         g.edges.append(e)
 
     for site in kafka_sites or []:
-        _register_kafka(g, site, symbols)
+        _register_kafka(g, site, symbols, var_types or {})
 
     for site in rest_sites or []:
         _register_rest(g, site, symbols)
@@ -89,13 +90,14 @@ def _node_for_id(node_id: str) -> Node:
     return Node(id=node_id, kind="code.method", name=node_id, parent_id=None, attrs={})
 
 
-def _register_kafka(g: Graph, site: KafkaSite, symbols: SymbolTable) -> None:
+def _register_kafka(g: Graph, site: KafkaSite, symbols: SymbolTable,
+                    var_types: dict[str, str] | None = None) -> None:
     topic_id = f"kafka.{site.topic}"
     if topic_id not in g.nodes:
         g.nodes[topic_id] = Node(id=topic_id, kind="kafka.topic",
                                  name=site.topic or "", parent_id=None, attrs={})
 
-    dto = _dto_for_kafka(site, symbols)
+    dto = _dto_for_kafka(site, symbols, var_types or {})
     ev = Evidence(file=site.file, line=site.line,
                   pattern=site.kind, snippet=f"kafka {site.kind} {site.topic}")
     if dto is None:
@@ -167,14 +169,19 @@ def _register_rest(g: Graph, site: RestSite, symbols: SymbolTable) -> None:
                             kind="write", evidence=(ev,), confidence="low"))
 
 
-def _dto_for_kafka(site: KafkaSite, symbols: SymbolTable) -> Dto | None:
+def _dto_for_kafka(site: KafkaSite, symbols: SymbolTable,
+                   var_types: dict[str, str] | None = None) -> Dto | None:
     if site.payload_type:
         for fqn, dto in symbols.classes.items():
             if fqn.endswith("." + site.payload_type) or fqn == site.payload_type:
                 return dto
-    # Fallback: if exactly one DTO is known, assume it is the payload shape.
-    if len(symbols.classes) == 1:
-        return next(iter(symbols.classes.values()))
+    # Principled fallback: look up the payload var's declared type from the DFA var-type map.
+    if site.payload_var and var_types:
+        type_name = var_types.get(site.payload_var)
+        if type_name:
+            for fqn, dto in symbols.classes.items():
+                if fqn.endswith("." + type_name) or fqn == type_name:
+                    return dto
     return None
 
 

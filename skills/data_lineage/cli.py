@@ -31,9 +31,10 @@ def run_pipeline(
     symbols = project_scan.run(project_root)
     units = sql_extract.run(project_root, symbols)
     sql_edges = sql_parse.run(units)
-    java_edges, kafka_sites, rest_sites = java_dfa.run(project_root, symbols, units)
+    java_edges, kafka_sites, rest_sites, var_types = java_dfa.run(project_root, symbols, units)
     graph = graph_build.run(symbols, sql_edges, java_edges,
-                            kafka_sites=kafka_sites, rest_sites=rest_sites)
+                            kafka_sites=kafka_sites, rest_sites=rest_sites,
+                            var_types=var_types)
 
     if filter_spec is not None:
         graph = apply_filters(graph, filter_spec)

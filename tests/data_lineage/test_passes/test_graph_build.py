@@ -24,7 +24,8 @@ def test_graph_kafka_send_produces_topic_and_field_nodes():
     syms = SymbolTable(classes={"x.Event": dto})
     sites = [KafkaSite(file="P.java", line=2, kind="kafka_send",
                        topic="client-updates", payload_var="ev", payload_type=None)]
-    g = graph_build.run(syms, [], [], kafka_sites=sites, rest_sites=[])
+    g = graph_build.run(syms, [], [], kafka_sites=sites, rest_sites=[],
+                        var_types={"ev": "Event"})
     assert "kafka.client-updates" in g.nodes
     assert "kafka.client-updates.user_email" in g.nodes
 

@@ -27,10 +27,11 @@ _IGNORED_DIRS = {"generated", "build", "target", ".gradle", "node_modules", ".gi
 
 def run(
     project_root: Path, symbols: SymbolTable, units: list[SqlUnit]
-) -> tuple[list[Edge], list[KafkaSite], list[RestSite]]:
+) -> tuple[list[Edge], list[KafkaSite], list[RestSite], dict[str, str]]:
     edges: list[Edge] = []
     kafka_sites: list[KafkaSite] = []
     rest_sites: list[RestSite] = []
+    var_types: dict[str, str] = {}
     for path in project_root.rglob("*.java"):
         if any(part in _IGNORED_DIRS for part in path.parts):
             continue
@@ -38,10 +39,12 @@ def run(
         source = path.read_bytes()
         tree = parse_java(source)
         for method in _iter_methods(tree.root_node):
-            edges.extend(_method_edges(method, source, rel, symbols))
+            method_edges, method_var_types = _method_edges(method, source, rel, symbols)
+            edges.extend(method_edges)
+            var_types.update(method_var_types)
         kafka_sites.extend(kafka_extract.extract(source, file=rel))
         rest_sites.extend(rest_extract.extract(source, file=rel))
-    return edges, kafka_sites, rest_sites
+    return edges, kafka_sites, rest_sites, var_types
 
 
 def _iter_methods(node):
@@ -51,23 +54,35 @@ def _iter_methods(node):
         yield from _iter_methods(child)
 
 
-def _method_edges(method, source: bytes, file: str, symbols: SymbolTable) -> list[Edge]:
+def _method_edges(
+    method, source: bytes, file: str, symbols: SymbolTable
+) -> tuple[list[Edge], dict[str, str]]:
     body = method.child_by_field_name("body")
     if body is None:
-        return []
+        return [], {}
     edges: list[Edge] = []
+    var_types: dict[str, str] = {}
     getter_index = _build_getter_index(symbols)
 
     for stmt in _iter_statements(body):
         if stmt.type == "local_variable_declaration":
+            # Collect the declared type name for var-type tracking
+            type_n = stmt.child_by_field_name("type")
+            declared_type: str | None = None
+            if type_n is not None:
+                declared_type = source[type_n.start_byte:type_n.end_byte].decode()
             for decl in stmt.named_children:
                 if decl.type != "variable_declarator":
                     continue
                 target_n = decl.child_by_field_name("name")
                 value_n = decl.child_by_field_name("value")
-                if target_n is None or value_n is None:
+                if target_n is None:
                     continue
                 tgt = source[target_n.start_byte:target_n.end_byte].decode()
+                if declared_type is not None:
+                    var_types[tgt] = declared_type
+                if value_n is None:
+                    continue
                 src = _expr_source(value_n, source, getter_index)
                 if src is None:
                     continue
@@ -86,7 +101,7 @@ def _method_edges(method, source: bytes, file: str, symbols: SymbolTable) -> lis
                     continue
                 edges.append(_edge(file, stmt, src, tgt))
 
-    return edges
+    return edges, var_types
 
 
 def _build_getter_index(symbols: SymbolTable) -> dict[str, str]:
