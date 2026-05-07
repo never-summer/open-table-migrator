@@ -10,6 +10,7 @@ dependencies = [
   "tree-sitter-python>=0.23",
   "tree-sitter-java>=0.23",
   "tree-sitter-scala>=0.23",
+  "sqlglot>=25.0.0",
 ]
 
 [project.optional-dependencies]
