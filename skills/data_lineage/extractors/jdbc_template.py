@@ -5,7 +5,7 @@ queryForRowSet, update, batchUpdate, execute. The first argument must be
 a single string literal; concatenations and variables are skipped (they
 become Unresolved entries elsewhere).
 """
-from skills.data_lineage.passes.sql_extract import SqlUnit
+from skills.data_lineage.passes.sql_unit import SqlUnit
 from skills.data_lineage.ts_parser import parse_java
 
 

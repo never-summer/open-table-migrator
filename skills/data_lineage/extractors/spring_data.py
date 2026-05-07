@@ -7,7 +7,7 @@ Two paths:
 """
 import re
 
-from skills.data_lineage.passes.sql_extract import SqlUnit
+from skills.data_lineage.passes.sql_unit import SqlUnit
 from skills.data_lineage.ts_parser import parse_java
 
 

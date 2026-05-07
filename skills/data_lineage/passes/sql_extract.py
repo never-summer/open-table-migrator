@@ -1,19 +1,30 @@
-"""Pass 2 — find SQL literals (@Query, JdbcTemplate) and jOOQ DSL chains."""
-from dataclasses import dataclass
+"""Pass 2 — fan out SQL extractors across all .java files in the project."""
 from pathlib import Path
 
+from skills.data_lineage.extractors import jdbc_template, jooq, spring_data
+
 from .project_scan import SymbolTable
+from .sql_unit import SqlUnit  # re-exported for consumers that import from here
+
+__all__ = ["SqlUnit", "run"]
 
 
-@dataclass(frozen=True)
-class SqlUnit:
-    file: str
-    line: int
-    kind: str            # "jdbc_query", "jpa_query", "jooq_select", ...
-    sql: str | None      # raw SQL string, None for jOOQ DSL
-    jooq_columns: tuple[str, ...] = ()
-    jooq_tables: tuple[str, ...] = ()
+_IGNORED_DIRS = {"generated", "build", "target", ".gradle", "node_modules", ".git"}
 
 
 def run(project_root: Path, symbols: SymbolTable) -> list[SqlUnit]:
-    return []
+    out: list[SqlUnit] = []
+    for path in _iter_java_files(project_root):
+        rel = str(path.relative_to(project_root))
+        source = path.read_bytes()
+        out.extend(jdbc_template.extract(source, file=rel))
+        out.extend(spring_data.extract(source, file=rel))
+        out.extend(jooq.extract(source, file=rel))
+    return out
+
+
+def _iter_java_files(root: Path):
+    for path in root.rglob("*.java"):
+        if any(part in _IGNORED_DIRS for part in path.parts):
+            continue
+        yield path
