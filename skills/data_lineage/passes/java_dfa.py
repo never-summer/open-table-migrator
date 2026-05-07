@@ -12,6 +12,9 @@ read/write into the same code.var.
 """
 from pathlib import Path
 
+from skills.data_lineage.extractors import kafka as kafka_extract, rest as rest_extract
+from skills.data_lineage.extractors.kafka import KafkaSite
+from skills.data_lineage.extractors.rest import RestSite
 from skills.data_lineage.model import Edge, Evidence
 from skills.data_lineage.ts_parser import parse_java
 
@@ -22,8 +25,12 @@ from .sql_extract import SqlUnit
 _IGNORED_DIRS = {"generated", "build", "target", ".gradle", "node_modules", ".git"}
 
 
-def run(project_root: Path, symbols: SymbolTable, units: list[SqlUnit]) -> list[Edge]:
+def run(
+    project_root: Path, symbols: SymbolTable, units: list[SqlUnit]
+) -> tuple[list[Edge], list[KafkaSite], list[RestSite]]:
     edges: list[Edge] = []
+    kafka_sites: list[KafkaSite] = []
+    rest_sites: list[RestSite] = []
     for path in project_root.rglob("*.java"):
         if any(part in _IGNORED_DIRS for part in path.parts):
             continue
@@ -32,7 +39,9 @@ def run(project_root: Path, symbols: SymbolTable, units: list[SqlUnit]) -> list[
         tree = parse_java(source)
         for method in _iter_methods(tree.root_node):
             edges.extend(_method_edges(method, source, rel, symbols))
-    return edges
+        kafka_sites.extend(kafka_extract.extract(source, file=rel))
+        rest_sites.extend(rest_extract.extract(source, file=rel))
+    return edges, kafka_sites, rest_sites
 
 
 def _iter_methods(node):
