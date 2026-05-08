@@ -228,10 +228,156 @@ Regex-детектор сохранён в ветке `regex-detector`.
 
 ---
 
-## Sibling skill: data_lineage
+# Sibling skill: data_lineage
 
-Repo также содержит [`skills/data_lineage/`](skills/data_lineage/SKILL.md) — column-level lineage для Spring Boot / jOOQ / JdbcTemplate / Spring Kafka / Spring Web проектов. Принцип тот же (tree-sitter + чистый Python), цель другая (граф потоков данных вместо миграции).
+Column-level lineage для Spring Boot / jOOQ / JdbcTemplate / Spring Kafka / Spring Web проектов. Принцип тот же (tree-sitter + чистый Python), цель другая — построить граф потоков данных, не трогая код.
+
+Подробный reference — в [`skills/data_lineage/SKILL.md`](skills/data_lineage/SKILL.md). Дизайн — в [`docs/superpowers/specs/2026-05-07-data-lineage-design.md`](docs/superpowers/specs/2026-05-07-data-lineage-design.md).
+
+## Что покрывает
+
+| Источник / приёмник | Что детектится |
+|---|---|
+| jOOQ DSL | типизированные `TABLE.COLUMN` цепочки: `select` / `selectFrom` / `insertInto` / `update` / `deleteFrom` |
+| JdbcTemplate | SQL-литералы в `query` / `queryForObject` / `update` / `batchUpdate` / `execute` |
+| Spring Data | `@Query` (JPQL и `nativeQuery=true`) + derived методы (`findByEmail` → колонка `email`) |
+| Spring Kafka | `KafkaTemplate.send(...)` + `@KafkaListener(topics=...)` + payload DTO |
+| Spring Web | `@RestController` + `@GetMapping`/`@PostMapping`/etc. + `@RequestBody` + `RestClient` |
+| DTO | POJO-поля, Lombok `@Data`/`@Getter`, Jackson `@JsonProperty(name=...)`, `@JsonIgnore` |
+
+Не покрывается (Phase 5): Oracle stored procedures, Spring Cache (Ehcache), Avro/Protobuf-схемы.
+
+## Установка
 
 ```bash
-PYTHONPATH=. python3 -m skills.data_lineage <project_path>
+# Если ещё не установлен open-table-migrator (deps общие):
+pip install -e ".[test]"
 ```
+
+Дополнительная зависимость только одна — `sqlglot`. JVM не нужна.
+
+## Пример: synthetic-spring-app
+
+В репо лежит синтетический Spring Boot проект на 9 файлов в [`tests/data_lineage/fixtures/synthetic-spring-app/`](tests/data_lineage/fixtures/synthetic-spring-app/) — модули `api`, `app`, `db`, jOOQ-репозиторий, JdbcTemplate-репозиторий, Kafka producer + listener, REST controller, два DTO с `@JsonProperty(name="user_email")`. Хороший пример "что увидит инструмент".
+
+### Шаг 1: Анализ
+
+```bash
+PYTHONPATH=. python3 -m skills.data_lineage \
+    tests/data_lineage/fixtures/synthetic-spring-app \
+    --output /tmp/dl-demo
+```
+
+Создаются три файла:
+```
+/tmp/dl-demo/
+├── lineage-report.txt    # текстовый отчёт (то же что в stdout)
+├── lineage-graph.json    # полный граф (узлы + рёбра + unresolved)
+└── lineage.mmd           # Mermaid-диаграмма
+```
+
+Текстовый отчёт начинается с summary:
+```
+Lineage report — 41 nodes, 24 edges, 0 unresolved
+```
+
+### Шаг 2: Читаем confidence-секции
+
+Граф разбит на три уровня доверия. **HIGH** — извлечено напрямую из SQL/jOOQ DSL через AST:
+
+```
+=== HIGH confidence (8) ===
+  db.clients.id     --read-->   code.var.id      [db/.../ClientRepository.java:7]
+  db.clients.email  --read-->   code.var.email   [db/.../ClientRepository.java:7]
+  code.var.email    --write-->  db.clients.email [db/.../ClientRepository.java:10]
+  db.devices.mac    --read-->   code.var.mac     [db/.../DeviceRepository.java:5]
+  ...
+```
+
+Это типы рёбер где инструмент уверен на 100%: jOOQ `dsl.select(CLIENTS.ID, CLIENTS.EMAIL)` и JdbcTemplate `"SELECT id, mac, owner_id FROM devices"`.
+
+**MEDIUM** — построено через эвристики имён (Lombok-getter ↔ field, Jackson-rename, Spring Data method-name). Здесь живёт самое интересное — соединение SQL с Kafka-payload через DTO:
+
+```
+=== MEDIUM confidence (15) ===
+  code.var.dto.email      --transform-->  code.var.ev.email                [ClientService.java:7]
+  code.var.ev.email       --write-->      kafka.client-updates.user_email  [ClientService.java:8]
+  kafka.client-updates.user_email  --read-->  code.dto.com.example.dto.ClientUpdateEvent.email
+  http.GET:/clients/{id}.response.user_email  --read-->  code.dto.com.example.dto.ClientDto.email
+```
+
+Обрати внимание на `user_email` — это Jackson `@JsonProperty("user_email")` на поле `email`. Если бы аннотации не было, в графе было бы `kafka.client-updates.email`. Эта детализация ради того, чтобы граф соответствовал тому что реально летит на проводе, а не Java-имени поля.
+
+**LOW** — Java DFA не смогла резолвить целевой DTO. В нашем фикстуре сюда попадает RestClient-вызов, payload-тип которого мы не вычислили:
+
+```
+=== LOW confidence (1) ===
+  code.var.dto  --write-->  http.POST:/notify  [ClientService.java:11]
+```
+
+Граф соединил `dto` с эндпоинтом, но не пробросил поля DTO в `http.POST:/notify.request.*`. Это explicit граница автоматики — пользователь видит что вот тут не дотащили.
+
+### Шаг 3: Mermaid-визуализация
+
+`lineage.mmd` — самодостаточный flowchart, открывается в любом Markdown-просмотрщике (GitHub, Obsidian, Mermaid Live):
+
+```mermaid
+flowchart LR
+  db_clients_email["db.clients.email"]
+  code_var_dto_email["code.var.dto.email"]
+  code_var_ev_email["code.var.ev.email"]
+  kafka_client_updates_user_email["kafka.client-updates.user_email"]
+  db_clients_email -.-> code_var_dto_email
+  code_var_dto_email -.-> code_var_ev_email
+  code_var_ev_email ==> kafka_client_updates_user_email
+```
+
+На реальном проекте полный mmd быстро становится нечитаемым (сотни узлов). Используй фильтры — см. шаг 4.
+
+### Шаг 4: Фильтры
+
+Свести граф до окрестности конкретной таблицы:
+
+```bash
+PYTHONPATH=. python3 -m skills.data_lineage <project> \
+    --output /tmp/dl-clients --only-table clients
+```
+
+Аналогично — `--only-topic client-updates`, `--max-depth 2` (BFS-радиус от seed-узлов).
+
+### Шаг 5: `--debug` для отладки
+
+Если на реальном проекте граф выглядит странно, прогон с `--debug` пишет промежуточные стейджи пайплайна:
+
+```bash
+PYTHONPATH=. python3 -m skills.data_lineage <project> --output /tmp/dl --debug --quiet
+ls /tmp/dl/debug/
+# 01-symbol-table.json    # все DTO классы что нашёл project_scan
+# 02-sql-units.json       # SQL-литералы и jOOQ-цепочки от sql_extract
+# 03-sql-edges.json       # column-edges от sqlglot
+# 04-java-edges.json      # DFA-edges
+```
+
+Можно посмотреть какой именно SQL не распарсился, какой DTO не нашёлся, и т.д.
+
+## Через субагента
+
+Если работаешь в Claude Code — есть готовый субагент. Триггерные фразы:
+
+> *"проанализируй data lineage в проекте"*
+> *"построй граф потоков данных"*
+> *"build data lineage for this project"*
+
+Субагент запустит CLI, парснет отчёт, покажет summary, даст разобрать low-confidence рёбра и unresolved-секции, по запросу отрендерит подграф.
+
+## Ограничения
+
+Жёстко не разбираемые случаи попадают в секцию `unresolved`:
+- SQL собранный через `StringBuilder` / `String.format` / `String.join`
+- MapStruct-мапперы и кастомные Jackson-сериализаторы
+- Reflection-сериализация
+- Stored procedures (Phase 5)
+
+Cross-table контаминация фильтров: `--only-table X` ходит BFS через `code.var.*` узлы; если две таблицы делят имя переменной (например, `id` есть в обеих), подграф может включить обе. Это by design — переменные глобальны в области анализа. Используй `--max-depth 1` для жёсткого scope.
+
+Полный список ограничений и confidence-семантика — в [SKILL.md](skills/data_lineage/SKILL.md).
