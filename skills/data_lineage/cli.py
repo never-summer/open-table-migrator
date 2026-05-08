@@ -3,7 +3,9 @@
 Runs the 5 pipeline passes, applies filters, and emits the requested formats.
 """
 import argparse
+import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from .filters import FilterSpec, apply as apply_filters
@@ -20,6 +22,23 @@ _FORMAT_FILES = {
 }
 
 
+def _write_debug_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(data, list):
+        try:
+            blob = [asdict(x) for x in data]
+        except TypeError:
+            blob = [repr(x) for x in data]
+    elif isinstance(data, dict):
+        blob = data
+    else:
+        try:
+            blob = asdict(data)
+        except TypeError:
+            blob = repr(data)
+    path.write_text(json.dumps(blob, indent=2, default=str))
+
+
 def run_pipeline(
     project_root: Path,
     *,
@@ -27,11 +46,27 @@ def run_pipeline(
     formats: tuple[str, ...] = ("text", "json", "mermaid"),
     filter_spec: FilterSpec | None = None,
     quiet: bool = False,
+    debug: bool = False,
 ) -> int:
     symbols = project_scan.run(project_root)
+    if debug:
+        _write_debug_json(
+            output_dir / "debug" / "01-symbol-table.json",
+            {fqn: asdict(dto) for fqn, dto in symbols.classes.items()},
+        )
+
     units = sql_extract.run(project_root, symbols)
+    if debug:
+        _write_debug_json(output_dir / "debug" / "02-sql-units.json", units)
+
     sql_edges = sql_parse.run(units)
+    if debug:
+        _write_debug_json(output_dir / "debug" / "03-sql-edges.json", sql_edges)
+
     java_edges, kafka_sites, rest_sites, var_types = java_dfa.run(project_root, symbols, units)
+    if debug:
+        _write_debug_json(output_dir / "debug" / "04-java-edges.json", java_edges)
+
     graph = graph_build.run(symbols, sql_edges, java_edges,
                             kafka_sites=kafka_sites, rest_sites=rest_sites,
                             var_types=var_types)
@@ -75,4 +110,5 @@ def main(argv: list[str] | None = None) -> int:
         formats=formats,
         filter_spec=spec,
         quiet=args.quiet,
+        debug=args.debug,
     )

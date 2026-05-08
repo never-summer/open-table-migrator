@@ -61,3 +61,14 @@ def test_synthetic_spring_app_end_to_end(tmp_path: Path):
     # Range bounds — sanity check
     assert 20 <= len(blob["nodes"]) <= 100
     assert 10 <= len(blob["edges"]) <= 100
+
+
+def test_debug_flag_writes_intermediate_artifacts(tmp_path: Path):
+    out = tmp_path / "out"
+    code = run_pipeline(FIXTURE, output_dir=out, formats=("json",), quiet=True, debug=True)
+    assert code == 0
+    debug_dir = out / "debug"
+    assert (debug_dir / "01-symbol-table.json").exists()
+    assert (debug_dir / "02-sql-units.json").exists()
+    assert (debug_dir / "03-sql-edges.json").exists()
+    assert (debug_dir / "04-java-edges.json").exists()
