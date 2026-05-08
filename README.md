@@ -225,3 +225,13 @@ Regex-детектор сохранён в ветке `regex-detector`.
 - `partitionBy(...)` в JVM → TODO для ручного добавления в Iceberg partition spec
 
 Полный список — в [SKILL.md § Known Limitations](skills/open_table_migrator/SKILL.md#known-limitations).
+
+---
+
+## Sibling skill: data_lineage
+
+Repo также содержит [`skills/data_lineage/`](skills/data_lineage/SKILL.md) — column-level lineage для Spring Boot / jOOQ / JdbcTemplate / Spring Kafka / Spring Web проектов. Принцип тот же (tree-sitter + чистый Python), цель другая (граф потоков данных вместо миграции).
+
+```bash
+PYTHONPATH=. python3 -m skills.data_lineage <project_path>
+```
