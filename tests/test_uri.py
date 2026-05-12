@@ -140,3 +140,30 @@ def test_match_file_pattern_matches_bare_path_uri():
 
 def test_match_trailing_slash_distinguishes():
     assert not matches_glob(_u("s3://bucket/users"), "s3://bucket/users/")
+
+
+# Fix 1: authority NUL sentinel restore
+def test_match_question_mark_in_authority():
+    assert matches_glob(_u("s3://my-A-bucket/x"), "s3://my-?-bucket/x")
+    assert not matches_glob(_u("s3://my-AB-bucket/x"), "s3://my-?-bucket/x")
+
+
+# Fix 2: unknown-scheme matching
+def test_match_unknown_scheme_matches_itself_exactly(capsys):
+    from skills.open_table_migrator import uri as uri_module
+    uri_module._UNKNOWN_WARNED.clear()
+    uri = _u("ftp://host.example/x")
+    assert matches_glob(uri, "ftp://host.example/x")
+
+
+def test_match_unknown_scheme_does_not_match_different_scheme():
+    uri = _u("ftp://host.example/x")
+    assert not matches_glob(uri, "s3://host.example/x")
+
+
+# Fix 3: parse() bare path with literal '?'
+def test_parse_bare_path_with_literal_question_mark_preserved():
+    # Rare but valid filename — '?' is legal in POSIX filenames.
+    # parse() should not lose it (urlparse treats '?' as query delimiter).
+    result = parse("/tmp/weird?.parquet")
+    assert result.path == "/tmp/weird?.parquet"

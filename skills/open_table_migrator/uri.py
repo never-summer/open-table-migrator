@@ -11,6 +11,7 @@ needs cluster config we do not read.
 from __future__ import annotations
 
 import fnmatch
+import posixpath
 import re
 import sys
 from dataclasses import dataclass
@@ -30,6 +31,10 @@ _CANONICAL = {
 
 _UNKNOWN_WARNED: set[str] = set()
 
+# NUL is not valid in URIs or POSIX paths, so it is safe as a sentinel to
+# prevent urlparse from treating '?' as a query-string delimiter.
+_SENTINEL = "\x00"
+
 
 @dataclass(frozen=True)
 class URI:
@@ -40,7 +45,9 @@ class URI:
 
 
 def parse(s: str, *, project_root: Path | None = None) -> URI:
-    parsed = urlparse(s)
+    # Pre-substitute '?' so urlparse doesn't treat it as a query delimiter.
+    s_safe = s.replace("?", _SENTINEL)
+    parsed = urlparse(s_safe)
     raw_scheme = parsed.scheme
     if raw_scheme in _CANONICAL:
         canonical = _CANONICAL[raw_scheme]
@@ -50,13 +57,12 @@ def parse(s: str, *, project_root: Path | None = None) -> URI:
                   file=sys.stderr)
             _UNKNOWN_WARNED.add(raw_scheme)
         canonical = "<unknown>"
-    authority = parsed.netloc
-    path = parsed.path
+    authority = parsed.netloc.replace(_SENTINEL, "?")
+    path = parsed.path.replace(_SENTINEL, "?")
 
     if canonical == "file" and raw_scheme == "" and project_root is not None:
         if path and not path.startswith("/"):
-            from posixpath import normpath
-            path = normpath(str(project_root / path))
+            path = posixpath.normpath(str(project_root / path))
 
     return URI(
         scheme=canonical,
@@ -96,14 +102,13 @@ def _parse_glob_pattern(pattern: str) -> URI:
     urlparse treats `?` as a query-string delimiter, which breaks glob
     patterns that use `?` as a single-character wildcard.  We work around
     this by temporarily replacing `?` with a sentinel before parsing, then
-    restoring it in the path component.
+    restoring it in both the path and authority components.
     """
-    _SENTINEL = "\x00"
     sanitised = pattern.replace("?", _SENTINEL)
     parsed = urlparse(sanitised)
     raw_scheme = parsed.scheme
-    canonical = _CANONICAL.get(raw_scheme, raw_scheme if raw_scheme else "file")
-    authority = parsed.netloc
+    canonical = _CANONICAL.get(raw_scheme, "<unknown>")
+    authority = parsed.netloc.replace(_SENTINEL, "?")
     path = parsed.path.replace(_SENTINEL, "?")
     return URI(scheme=canonical, raw_scheme=raw_scheme, authority=authority, path=path)
 
@@ -111,6 +116,9 @@ def _parse_glob_pattern(pattern: str) -> URI:
 def matches_glob(uri: URI, pattern: str) -> bool:
     pat = _parse_glob_pattern(pattern)
     if uri.scheme != pat.scheme:
+        return False
+    # For unknown schemes, exact raw_scheme equality is required (no aliasing).
+    if uri.scheme == "<unknown>" and uri.raw_scheme != pat.raw_scheme:
         return False
     if not fnmatch.fnmatchcase(uri.authority, pat.authority):
         return False
