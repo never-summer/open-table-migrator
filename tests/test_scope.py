@@ -151,3 +151,89 @@ def test_python_non_literal_rhs_skipped():
     table = build_const_table(src, "python", "x.py")
     binding = table.resolve("PATH")
     assert binding is None or binding.value is None
+
+
+def test_java_class_static_final():
+    src = dedent('''
+        public class Job {
+            private static final String PATH = "s3://bucket/x";
+        }
+    ''').encode()
+    table = build_const_table(src, "java", "Job.java")
+    binding = table.resolve("PATH")
+    assert binding is not None
+    assert binding.value == "s3://bucket/x"
+
+
+def test_java_class_final_inline_no_static():
+    src = dedent('''
+        public class Job {
+            private final String PATH = "s3://bucket/x";
+        }
+    ''').encode()
+    table = build_const_table(src, "java", "Job.java")
+    assert table.resolve("PATH").value == "s3://bucket/x"
+
+
+def test_java_non_final_skipped():
+    src = dedent('''
+        public class Job {
+            private String PATH = "s3://bucket/x";
+        }
+    ''').encode()
+    table = build_const_table(src, "java", "Job.java")
+    binding = table.resolve("PATH")
+    assert binding is None or binding.value is None
+
+
+def test_java_class_concat():
+    src = dedent('''
+        public class Job {
+            private static final String BASE = "s3://bucket";
+            private static final String PATH = BASE + "/events";
+        }
+    ''').encode()
+    table = build_const_table(src, "java", "Job.java")
+    assert table.resolve("PATH").value == "s3://bucket/events"
+
+
+def test_java_method_local_final():
+    src = dedent('''
+        public class Job {
+            void run() {
+                final String localPath = "s3://other";
+            }
+        }
+    ''').encode()
+    table = build_const_table(src, "java", "Job.java")
+    binding = table.resolve("localPath", scope_hint="run")
+    assert binding is not None
+    assert binding.value == "s3://other"
+
+
+def test_java_method_local_non_final_skipped():
+    src = dedent('''
+        public class Job {
+            void run() {
+                String localPath = "s3://other";
+            }
+        }
+    ''').encode()
+    table = build_const_table(src, "java", "Job.java")
+    assert table.resolve("localPath", scope_hint="run") is None
+
+
+def test_java_reassignment_in_method():
+    src = dedent('''
+        public class Job {
+            void run() {
+                final String p = "s3://a";
+                final String p = "s3://b";
+            }
+        }
+    ''').encode()
+    table = build_const_table(src, "java", "Job.java")
+    binding = table.resolve("p", scope_hint="run")
+    assert binding is not None
+    assert binding.value is None
+    assert binding.reason == "reassigned"
