@@ -10,6 +10,8 @@ needs cluster config we do not read.
 """
 from __future__ import annotations
 
+import fnmatch
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,3 +64,54 @@ def parse(s: str, *, project_root: Path | None = None) -> URI:
         authority=authority,
         path=path,
     )
+
+
+def _path_match(uri_path: str, pattern_path: str) -> bool:
+    """Path glob with `**` (multi-segment), `*` (single segment), `?` (single char)."""
+    if "**" not in pattern_path:
+        return fnmatch.fnmatchcase(uri_path, pattern_path)
+
+    out: list[str] = []
+    i = 0
+    while i < len(pattern_path):
+        c = pattern_path[i]
+        if pattern_path[i:i + 2] == "**":
+            out.append(".*")
+            i += 2
+        elif c == "*":
+            out.append("[^/]*")
+            i += 1
+        elif c == "?":
+            out.append(".")
+            i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return re.fullmatch("".join(out), uri_path) is not None
+
+
+def _parse_glob_pattern(pattern: str) -> URI:
+    """Parse a glob pattern string into a URI.
+
+    urlparse treats `?` as a query-string delimiter, which breaks glob
+    patterns that use `?` as a single-character wildcard.  We work around
+    this by temporarily replacing `?` with a sentinel before parsing, then
+    restoring it in the path component.
+    """
+    _SENTINEL = "\x00"
+    sanitised = pattern.replace("?", _SENTINEL)
+    parsed = urlparse(sanitised)
+    raw_scheme = parsed.scheme
+    canonical = _CANONICAL.get(raw_scheme, raw_scheme if raw_scheme else "file")
+    authority = parsed.netloc
+    path = parsed.path.replace(_SENTINEL, "?")
+    return URI(scheme=canonical, raw_scheme=raw_scheme, authority=authority, path=path)
+
+
+def matches_glob(uri: URI, pattern: str) -> bool:
+    pat = _parse_glob_pattern(pattern)
+    if uri.scheme != pat.scheme:
+        return False
+    if not fnmatch.fnmatchcase(uri.authority, pat.authority):
+        return False
+    return _path_match(uri.path, pat.path)

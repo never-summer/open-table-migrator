@@ -87,3 +87,56 @@ def test_parse_unknown_scheme_warns_and_returns_unknown(capsys):
     captured = capsys.readouterr()
     assert "ftp" in captured.err
     assert "unknown URI scheme" in captured.err
+
+
+from skills.open_table_migrator.uri import matches_glob
+
+
+def _u(s, project_root=None):
+    return parse(s, project_root=project_root)
+
+
+def test_match_s3_pattern_matches_s3a_uri():
+    assert matches_glob(_u("s3a://bucket/users/x"), "s3://bucket/users/*")
+
+
+def test_match_s3_pattern_does_not_match_different_path():
+    assert not matches_glob(_u("s3://bucket/orders/x"), "s3://bucket/users/*")
+
+
+def test_match_hdfs_pattern_matches_webhdfs_uri():
+    assert matches_glob(_u("webhdfs://ns/warehouse/x"), "hdfs://ns/warehouse/*")
+
+
+def test_match_viewfs_does_not_match_hdfs():
+    assert not matches_glob(_u("hdfs://ns/x"), "viewfs://ns/x")
+
+
+def test_match_double_star_crosses_segments():
+    assert matches_glob(
+        _u("s3://bucket/users/2024/01/data.parquet"),
+        "s3://bucket/users/**",
+    )
+
+
+def test_match_question_mark_matches_single_char():
+    assert matches_glob(_u("s3://bucket/users/x.parquet"),
+                        "s3://bucket/users/?.parquet")
+
+
+def test_match_authority_glob():
+    assert matches_glob(_u("s3://my-prod-bucket/x"), "s3://my-*-bucket/x")
+
+
+def test_match_bare_path_matches_file_pattern():
+    assert matches_glob(_u("/tmp/fixtures/x.parquet"),
+                        "file:///tmp/fixtures/*")
+
+
+def test_match_file_pattern_matches_bare_path_uri():
+    assert matches_glob(_u("file:///tmp/fixtures/x.parquet"),
+                        "/tmp/fixtures/*")
+
+
+def test_match_trailing_slash_distinguishes():
+    assert not matches_glob(_u("s3://bucket/users"), "s3://bucket/users/")
