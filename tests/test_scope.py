@@ -48,3 +48,106 @@ def test_resolve_local_shadows_module():
     })
     assert table.resolve("X", scope_hint="f") == local
     assert table.resolve("X") == module
+
+
+from textwrap import dedent
+
+
+def test_python_module_literal():
+    src = dedent('''
+        PATH = "s3://bucket/x"
+    ''').encode()
+    table = build_const_table(src, "python", "x.py")
+    binding = table.resolve("PATH")
+    assert binding is not None
+    assert binding.value == "s3://bucket/x"
+    assert binding.scope == "module"
+
+
+def test_python_module_literal_with_annotation():
+    src = dedent('''
+        PATH: str = "s3://bucket/x"
+    ''').encode()
+    table = build_const_table(src, "python", "x.py")
+    assert table.resolve("PATH").value == "s3://bucket/x"
+
+
+def test_python_module_concat_two_literals():
+    src = dedent('''
+        PATH = "s3://" + "bucket/x"
+    ''').encode()
+    table = build_const_table(src, "python", "x.py")
+    assert table.resolve("PATH").value == "s3://bucket/x"
+
+
+def test_python_module_concat_literal_plus_known_const():
+    src = dedent('''
+        BASE = "s3://bucket"
+        PATH = BASE + "/events"
+    ''').encode()
+    table = build_const_table(src, "python", "x.py")
+    assert table.resolve("PATH").value == "s3://bucket/events"
+
+
+def test_python_module_concat_dependency_unresolved():
+    src = dedent('''
+        PATH = UNKNOWN + "/events"
+    ''').encode()
+    table = build_const_table(src, "python", "x.py")
+    binding = table.resolve("PATH")
+    assert binding.value is None
+    assert binding.reason == "dependency_unresolved"
+
+
+def test_python_function_local_literal():
+    src = dedent('''
+        def job():
+            p = "s3://bucket/x"
+    ''').encode()
+    table = build_const_table(src, "python", "x.py")
+    binding = table.resolve("p", scope_hint="job")
+    assert binding is not None
+    assert binding.value == "s3://bucket/x"
+    assert binding.scope == "job"
+
+
+def test_python_function_shadows_module():
+    src = dedent('''
+        PATH = "s3://module"
+        def job():
+            PATH = "s3://local"
+    ''').encode()
+    table = build_const_table(src, "python", "x.py")
+    assert table.resolve("PATH").value == "s3://module"
+    assert table.resolve("PATH", scope_hint="job").value == "s3://local"
+
+
+def test_python_reassignment_marks_unresolvable():
+    src = dedent('''
+        PATH = "s3://a"
+        PATH = "s3://b"
+    ''').encode()
+    table = build_const_table(src, "python", "x.py")
+    binding = table.resolve("PATH")
+    assert binding.value is None
+    assert binding.reason == "reassigned"
+
+
+def test_python_fstring_skipped():
+    src = dedent('''
+        bucket = "x"
+        PATH = f"s3://{bucket}/events"
+    ''').encode()
+    table = build_const_table(src, "python", "x.py")
+    binding = table.resolve("PATH")
+    assert binding is None or binding.value is None
+
+
+def test_python_non_literal_rhs_skipped():
+    src = dedent('''
+        import os
+        PATH = os.getenv("X")
+    ''').encode()
+    table = build_const_table(src, "python", "x.py")
+    binding = table.resolve("PATH")
+    assert binding is None or binding.value is None

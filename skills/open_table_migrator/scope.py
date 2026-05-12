@@ -52,3 +52,143 @@ def build_const_table(source: bytes, language: str, file: str) -> ConstTable:
 
 
 _COLLECTORS: dict[str, callable] = {}
+
+
+def _python_extract_string_literal(node, source: bytes) -> str | None:
+    """Return the string value of a Python `string` node, or None.
+
+    Returns None for f-strings (contain `interpolation` children).
+    """
+    if node.type != "string":
+        return None
+    for child in node.children:
+        if child.type == "interpolation":
+            return None
+    for child in node.children:
+        if child.type == "string_content":
+            return source[child.start_byte:child.end_byte].decode()
+    # Empty string "" — no string_content child
+    return ""
+
+
+def _python_assign_target_name(assignment_node, source: bytes) -> str | None:
+    left = assignment_node.child_by_field_name("left")
+    if left is None:
+        for child in assignment_node.children:
+            if child.type == "identifier":
+                return source[child.start_byte:child.end_byte].decode()
+        return None
+    if left.type == "identifier":
+        return source[left.start_byte:left.end_byte].decode()
+    return None
+
+
+def _python_scope_key(node) -> str:
+    """Walk up to the enclosing function_definition. Return its name or 'module'."""
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "function_definition":
+            for child in parent.children:
+                if child.type == "identifier":
+                    return child.text.decode()
+            return "anonymous"
+        parent = parent.parent
+    return "module"
+
+
+def _python_iter_assignments(root):
+    """Yield every assignment node in the file (pre-order)."""
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "assignment":
+            yield node
+        for child in reversed(node.children):
+            stack.append(child)
+
+
+def _python_collector(root, source: bytes, file: str) -> ConstTable:
+    table = ConstTable()
+    seen: dict[tuple[str, str], int] = {}
+
+    def _add_or_reassign(scope: str, name: str, value: str | None,
+                         line: int, reason: str | None) -> None:
+        key = (scope, name)
+        if key in seen:
+            table.bindings[key] = ConstBinding(
+                name=name, value=None, file=file, line=line,
+                scope=scope, reason="reassigned",
+            )
+            seen[key] += 1
+            return
+        seen[key] = 1
+        table.bindings[key] = ConstBinding(
+            name=name, value=value, file=file, line=line,
+            scope=scope, reason=reason,
+        )
+
+    # Pass 1: pure literals
+    for assign in _python_iter_assignments(root):
+        name = _python_assign_target_name(assign, source)
+        if name is None:
+            continue
+        right = assign.child_by_field_name("right")
+        if right is None:
+            continue
+        literal = _python_extract_string_literal(right, source)
+        if literal is None:
+            continue
+        scope = _python_scope_key(assign)
+        line = assign.start_point[0] + 1
+        _add_or_reassign(scope, name, literal, line, reason=None)
+
+    # Pass 2: 1-level concat `+`
+    for assign in _python_iter_assignments(root):
+        name = _python_assign_target_name(assign, source)
+        if name is None:
+            continue
+        right = assign.child_by_field_name("right")
+        if right is None or right.type != "binary_operator":
+            continue
+        scope = _python_scope_key(assign)
+        line = assign.start_point[0] + 1
+
+        # Check the operator is `+`
+        op_node = None
+        for child in right.children:
+            txt = source[child.start_byte:child.end_byte]
+            if txt == b"+":
+                op_node = child
+                break
+        if op_node is None:
+            continue
+
+        left_n = right.child_by_field_name("left")
+        right_n = right.child_by_field_name("right")
+        if left_n is None or right_n is None:
+            continue
+
+        def _resolve_operand(operand) -> str | None:
+            lit = _python_extract_string_literal(operand, source)
+            if lit is not None:
+                return lit
+            if operand.type == "identifier":
+                op_name = source[operand.start_byte:operand.end_byte].decode()
+                lookup = table.resolve(op_name, scope_hint=scope)
+                if lookup is not None and lookup.value is not None:
+                    return lookup.value
+            return None
+
+        l_val = _resolve_operand(left_n)
+        r_val = _resolve_operand(right_n)
+        if l_val is None or r_val is None:
+            _add_or_reassign(scope, name, value=None, line=line,
+                             reason="dependency_unresolved")
+            continue
+        _add_or_reassign(scope, name, value=l_val + r_val, line=line,
+                         reason=None)
+
+    return table
+
+
+_COLLECTORS["python"] = _python_collector
