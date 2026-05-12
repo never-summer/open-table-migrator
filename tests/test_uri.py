@@ -167,3 +167,22 @@ def test_parse_bare_path_with_literal_question_mark_preserved():
     # parse() should not lose it (urlparse treats '?' as query delimiter).
     result = parse("/tmp/weird?.parquet")
     assert result.path == "/tmp/weird?.parquet"
+
+
+def test_match_single_star_crosses_segments_when_no_double_star():
+    """`*` matches across `/` when the pattern has no `**` — this is the
+    fnmatch fallback behavior (aligned with aws-cli convention).
+    Use `**` only when you need to disambiguate (no practical difference
+    in single-pattern matching)."""
+    assert matches_glob(_u("s3://bucket/users/2024/01/data.parquet"),
+                        "s3://bucket/users/*")
+
+
+def test_parse_glob_pattern_warns_on_unknown_scheme(capsys):
+    from skills.open_table_migrator import uri as uri_module
+    uri_module._UNKNOWN_WARNED.clear()
+    # Indirectly via matches_glob — it calls _parse_glob_pattern
+    matches_glob(_u("s3://bucket/x"), "hfds://typo/x")
+    captured = capsys.readouterr()
+    assert "hfds" in captured.err
+    assert "unknown URI scheme" in captured.err

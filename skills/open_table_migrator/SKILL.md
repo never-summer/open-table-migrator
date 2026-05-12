@@ -250,6 +250,17 @@ A mapping entry `s3://bucket/users/*` matches paths in the code regardless of wh
 
 **`path_arg` in the worklist is preserved verbatim** — the equivalence is applied only when comparing against mapping globs.
 
+### Glob syntax
+
+Mapping patterns support shell-style globs in the authority and path components:
+
+- `*` matches any character sequence (including `/`) — same as `s3://bucket/users/*` matching `s3://bucket/users/2024/01/data.parquet`
+- `**` is provided for clarity and behaves the same as `*` in single-pattern matches
+- `?` matches one character
+- Brackets like `[abc]` are not supported
+
+This matches the convention used by `aws s3` and similar cloud-storage tools.
+
 ### Bare local paths
 
 Bare paths (`./data/x`, `/tmp/fixtures/x`) are treated as `file://` for matching. Relative paths are resolved against the project root passed via the CLI.
@@ -269,7 +280,7 @@ Bare paths (`./data/x`, `/tmp/fixtures/x`) are treated as `file://` for matching
 
 ### Scheme-less globs (backward compat)
 
-Glob patterns without a scheme and not starting with `/` (e.g., `*users*`, `data/*`) fall back to literal `fnmatch` against the raw `path_arg` string. This preserves legacy mapping files that pre-date URI awareness. New patterns should prefer explicit schemes.
+Glob patterns without a scheme and not starting with `/` (e.g., `*users*`, `data/*`) fall back to `fnmatch` against the **full raw `path_arg` string** — including any scheme prefix. So `*users*` matches `s3://bucket/users/x` because the full raw string contains the literal substring `users`. This preserves legacy mapping files that pre-date URI awareness. New patterns should prefer explicit schemes for clarity.
 
 ### Unknown schemes
 

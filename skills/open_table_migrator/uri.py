@@ -73,7 +73,19 @@ def parse(s: str, *, project_root: Path | None = None) -> URI:
 
 
 def _path_match(uri_path: str, pattern_path: str) -> bool:
-    """Path glob with `**` (multi-segment), `*` (single segment), `?` (single char)."""
+    """Path glob via fnmatch when no `**` is present; otherwise a regex builder.
+
+    When the pattern contains no `**`, matching delegates to fnmatch.fnmatchcase
+    on the raw paths — this means `*` and `?` follow fnmatch semantics
+    (`*` matches any character sequence INCLUDING `/`). This aligns with
+    S3 / aws-cli prefix conventions where `s3://bucket/users/*` matches
+    any depth of nested keys under `/users/`.
+
+    When the pattern contains `**`, an explicit regex is built where `*`
+    becomes `[^/]*` (single-segment) and `**` becomes `.*` (multi-segment).
+    Use `**` if you specifically need an explicit multi-segment matcher;
+    otherwise `*` does the same thing via fnmatch fallback.
+    """
     if "**" not in pattern_path:
         return fnmatch.fnmatchcase(uri_path, pattern_path)
 
@@ -107,6 +119,10 @@ def _parse_glob_pattern(pattern: str) -> URI:
     sanitised = pattern.replace("?", _SENTINEL)
     parsed = urlparse(sanitised)
     raw_scheme = parsed.scheme
+    if raw_scheme not in _CANONICAL and raw_scheme not in _UNKNOWN_WARNED:
+        print(f"open_table_migrator: unknown URI scheme '{raw_scheme}' in mapping pattern {pattern!r}",
+              file=sys.stderr)
+        _UNKNOWN_WARNED.add(raw_scheme)
     canonical = _CANONICAL.get(raw_scheme, "<unknown>")
     authority = parsed.netloc.replace(_SENTINEL, "?")
     path = parsed.path.replace(_SENTINEL, "?")
