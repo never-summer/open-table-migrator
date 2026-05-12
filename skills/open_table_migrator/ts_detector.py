@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 
 from .detector import PatternMatch
+from .scope import build_const_table, ConstTable
 from .ts_parser import language_for_file, parse
 
 # ---------------------------------------------------------------------------
@@ -100,6 +101,70 @@ def _nth_positional_arg_string(args_node, lang: str, n: int) -> str | None:
     if n < len(positional):
         return _extract_string(positional[n], lang)
     return None
+
+
+def _enclosing_function_name(node, lang: str) -> str | None:
+    """Walk up to the nearest function/method definition. Return its name or None."""
+    parent = node.parent if hasattr(node, "parent") else None
+    while parent is not None:
+        if lang == "python" and parent.type == "function_definition":
+            for child in parent.children:
+                if child.type == "identifier":
+                    return child.text.decode()
+        if lang == "java" and parent.type == "method_declaration":
+            name_n = parent.child_by_field_name("name")
+            if name_n is not None:
+                return name_n.text.decode()
+        if lang == "scala" and parent.type == "function_definition":
+            name_n = parent.child_by_field_name("name")
+            if name_n is not None:
+                return name_n.text.decode()
+        parent = parent.parent
+    return None
+
+
+def _resolve_identifier_arg(
+    args_node, lang: str, const_table: ConstTable, scope_hint: str | None,
+) -> tuple[str | None, dict[str, str]]:
+    """Try to resolve the first non-keyword positional arg via const_table.
+
+    Returns (value, attrs_update). If first positional arg is an identifier
+    that resolves to a literal, returns (value, {"resolved_from": "..."}).
+    If it resolves to a None-binding (reassigned/unresolvable), returns
+    (None, {"skipped_reason": reason}). If it's not an identifier or no
+    binding exists, returns (None, {}).
+    """
+    if args_node is None:
+        return None, {}
+    _SKIP = {"(", ")", ",", "=", "keyword_argument"}
+    for child in args_node.children:
+        if child.type in _SKIP:
+            continue
+        if child.type == "identifier":
+            name = child.text.decode()
+            binding = const_table.resolve(name, scope_hint=scope_hint)
+            if binding is None:
+                return None, {}
+            if binding.value is None:
+                return None, {"skipped_reason": binding.reason or "unknown"}
+            return binding.value, {
+                "resolved_from": f"{name}@{binding.file}:{binding.line}",
+            }
+        # First positional that isn't an identifier — bail
+        break
+    return None, {}
+
+
+def _first_arg_or_resolved(
+    args_node, lang: str, const_table: ConstTable, scope_hint: str | None,
+) -> tuple[str | None, dict[str, str]]:
+    """Combined: try literal first via _first_string_arg, fall back to identifier resolution."""
+    if args_node is None:
+        return None, {}
+    val = _first_string_arg(args_node, lang)
+    if val is not None:
+        return val, {}
+    return _resolve_identifier_arg(args_node, lang, const_table, scope_hint)
 
 
 def _get_args_node(call_node, lang: str):
@@ -367,8 +432,10 @@ def _detect_python_lib(
     method_name: str, obj_text: str, args, lang: str,
     file_path: Path, line: int, end_line: int,
     original_code: str, first_str: str | None,
+    attrs: dict[str, str] | None = None,
 ) -> PatternMatch | None:
     """Detect pandas, pyarrow, and stdlib csv patterns (Python only)."""
+    _attrs: dict[str, str] = attrs or {}
 
     # --- pandas: pd.read_FORMAT / .to_FORMAT ---
     if method_name.startswith("read_") and ("pd" in obj_text or "pandas" in obj_text):
@@ -378,6 +445,7 @@ def _detect_python_lib(
             pattern_type=f"pandas_read_{fmt}",
             original_code=original_code,
             path_arg=first_str, end_line=end_line, format=fmt,
+            attrs=dict(_attrs),
         )
 
     if method_name.startswith("to_") and method_name != "to_":
@@ -388,6 +456,7 @@ def _detect_python_lib(
                 pattern_type=f"pandas_write_{fmt}",
                 original_code=original_code,
                 path_arg=first_str, end_line=end_line, format=fmt,
+                attrs=dict(_attrs),
             )
 
     # --- pyarrow: pq.read_table, pq.write_table, pq.ParquetFile, etc. ---
@@ -398,6 +467,7 @@ def _detect_python_lib(
                 pattern_type="pyarrow_read_parquet",
                 original_code=original_code,
                 path_arg=first_str, end_line=end_line, format="parquet",
+                attrs=dict(_attrs),
             )
         if any(x in obj_text for x in ("orc", "po")):
             return PatternMatch(
@@ -405,6 +475,7 @@ def _detect_python_lib(
                 pattern_type="pyarrow_read_orc",
                 original_code=original_code,
                 path_arg=first_str, end_line=end_line, format="orc",
+                attrs=dict(_attrs),
             )
 
     if method_name == "write_table":
@@ -431,6 +502,7 @@ def _detect_python_lib(
                 pattern_type="pyarrow_read_dataset",
                 original_code=original_code,
                 path_arg=first_str, end_line=end_line, format="parquet",
+                attrs=dict(_attrs),
             )
 
     if method_name == "dataset" and any(x in obj_text for x in ("pa.dataset", "pyarrow.dataset", "dataset")):
@@ -439,6 +511,7 @@ def _detect_python_lib(
             pattern_type="pyarrow_read_dataset",
             original_code=original_code,
             path_arg=first_str, end_line=end_line, format="dataset",
+            attrs=dict(_attrs),
         )
 
     if method_name == "write_dataset" and any(x in obj_text for x in ("pa.dataset", "pyarrow.dataset", "dataset")):
@@ -457,6 +530,7 @@ def _detect_python_lib(
             pattern_type="stdlib_write_csv",
             original_code=original_code,
             path_arg=first_str, end_line=end_line, format="csv",
+            attrs=dict(_attrs),
         )
     if method_name in ("reader", "DictReader") and "csv" in obj_text:
         return PatternMatch(
@@ -464,6 +538,7 @@ def _detect_python_lib(
             pattern_type="stdlib_read_csv",
             original_code=original_code,
             path_arg=first_str, end_line=end_line, format="csv",
+            attrs=dict(_attrs),
         )
 
     return None
@@ -488,8 +563,10 @@ def _detect_spark_chain(
     node, method_name: str, lang: str,
     file_path: Path, line: int, end_line: int,
     original_code: str, first_str: str | None,
+    attrs: dict[str, str] | None = None,
 ) -> PatternMatch | None:
     """Detect Spark .read/.write/.readStream/.writeStream chain patterns."""
+    _attrs: dict[str, str] = attrs or {}
     chain_kws = _find_chain_keywords(node)
     if not chain_kws:
         return None
@@ -501,6 +578,7 @@ def _detect_spark_chain(
             pattern_type=f"spark_{direction}_{method_name}",
             original_code=original_code,
             path_arg=first_str, end_line=end_line, format=method_name,
+            attrs=dict(_attrs),
         )
 
     if method_name in ("load", "save", "start"):
@@ -512,16 +590,24 @@ def _detect_spark_chain(
                 pattern_type=f"spark_{direction}_{fmt}",
                 original_code=original_code,
                 path_arg=first_str, end_line=end_line, format=fmt,
+                attrs=dict(_attrs),
             )
 
     return None
 
 
-def _detect_calls_in_tree(root, lang: str, file_path: Path, source_bytes: bytes) -> list[PatternMatch]:
+def _detect_calls_in_tree(
+    root, lang: str, file_path: Path, source_bytes: bytes,
+    const_table: ConstTable | None = None,
+) -> list[PatternMatch]:
     """Walk the AST and detect all I/O call patterns."""
     matches: list[PatternMatch] = []
     call_type = _call_node_type(lang)
     string_types = _STRING_NODE_TYPES[lang]
+
+    # Use an empty ConstTable if none is provided (backward-compat)
+    if const_table is None:
+        const_table = ConstTable()
 
     for node in _walk(root):
         if node.type in string_types:
@@ -548,7 +634,8 @@ def _detect_calls_in_tree(root, lang: str, file_path: Path, source_bytes: bytes)
                         if child.type == "argument_list":
                             args = child
                             break
-                    path_arg = _first_string_arg(args, lang) if args else None
+                    scope_hint = _enclosing_function_name(node, lang)
+                    path_arg, _attrs = _first_arg_or_resolved(args, lang, const_table, scope_hint)
                     top = _top_statement(node)
                     matches.append(PatternMatch(
                         file=file_path,
@@ -557,6 +644,7 @@ def _detect_calls_in_tree(root, lang: str, file_path: Path, source_bytes: bytes)
                         original_code=top.text.decode().strip(),
                         path_arg=path_arg,
                         end_line=top.end_point[0] + 1,
+                        attrs=_attrs,
                     ))
 
         if node.type != call_type:
@@ -572,7 +660,8 @@ def _detect_calls_in_tree(root, lang: str, file_path: Path, source_bytes: bytes)
 
         obj_text = _get_object_text(node, lang) or ""
         args = _get_args_node(node, lang)
-        first_str = _first_string_arg(args, lang) if args else None
+        scope_hint = _enclosing_function_name(node, lang)
+        first_str, _attrs = _first_arg_or_resolved(args, lang, const_table, scope_hint)
 
         line = node.start_point[0] + 1
         top = _top_statement(node)
@@ -583,6 +672,7 @@ def _detect_calls_in_tree(root, lang: str, file_path: Path, source_bytes: bytes)
             m = _detect_python_lib(
                 method_name, obj_text, args, lang,
                 file_path, line, end_line, original_code, first_str,
+                attrs=_attrs,
             )
             if m:
                 matches.append(m)
@@ -594,6 +684,7 @@ def _detect_calls_in_tree(root, lang: str, file_path: Path, source_bytes: bytes)
                 pattern_type="spark_read_table",
                 original_code=original_code,
                 path_arg=first_str, end_line=end_line, format="table",
+                attrs=_attrs,
             ))
             continue
 
@@ -603,12 +694,14 @@ def _detect_calls_in_tree(root, lang: str, file_path: Path, source_bytes: bytes)
                 pattern_type="hive_save_table",
                 original_code=original_code,
                 path_arg=first_str, end_line=end_line,
+                attrs=_attrs,
             ))
             continue
 
         m = _detect_spark_chain(
             node, method_name, lang,
             file_path, line, end_line, original_code, first_str,
+            attrs=_attrs,
         )
         if m:
             matches.append(m)
@@ -640,6 +733,11 @@ def ts_detect(project_root: Path) -> list[PatternMatch]:
             continue
 
         tree = parse(source, lang)
-        matches.extend(_detect_calls_in_tree(tree.root_node, lang, src_file, source))
+        const_table = build_const_table(
+            source, lang, str(src_file.relative_to(project_root))
+        )
+        matches.extend(
+            _detect_calls_in_tree(tree.root_node, lang, src_file, source, const_table)
+        )
 
     return matches
