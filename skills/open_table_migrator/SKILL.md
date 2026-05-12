@@ -233,6 +233,48 @@ python -m skills.open_table_migrator.cli <project> --mapping mapping.json
 
 In a single source file with multiple targets, the Python transformers emit one `catalog = ...` header plus one `tbl_<ns>_<name>` per target, and rewrite each call site to use the right variable. Calls whose path is a variable or doesn't match any glob (and has no fallback) become `# TODO(iceberg): could not resolve target ...` comments.
 
+## Path schemes
+
+The mapping resolver is URI-aware. Sub-scheme variants of the same storage are treated as equivalent:
+
+| Canonical scheme | Aliases | Example |
+|---|---|---|
+| `s3` | `s3a`, `s3n` | `s3://bucket/key` |
+| `hdfs` | `webhdfs` | `hdfs://nameservice/path` |
+| `abfs` | `abfss` | `abfs://container@account.dfs.core.windows.net/path` |
+| `gs` | — | `gs://bucket/key` |
+| `viewfs` | — (kept distinct from `hdfs`) | `viewfs://nameservice/path` |
+| `file` | bare paths (`/tmp/...`, `./data/...`) | `file:///tmp/x` |
+
+A mapping entry `s3://bucket/users/*` matches paths in the code regardless of whether the code writes `s3://`, `s3a://`, or `s3n://`. The same is true for `hdfs`/`webhdfs` and `abfs`/`abfss`.
+
+**`path_arg` in the worklist is preserved verbatim** — the equivalence is applied only when comparing against mapping globs.
+
+### Bare local paths
+
+Bare paths (`./data/x`, `/tmp/fixtures/x`) are treated as `file://` for matching. Relative paths are resolved against the project root passed via the CLI.
+
+### viewfs limitation
+
+`viewfs://` is **not** auto-resolved against an underlying `hdfs://` cluster. Mount-point resolution depends on cluster config we do not read. If your project uses both `viewfs://` and `hdfs://` (e.g., logical mount in jobs, physical path in DDL), list both schemes explicitly in the mapping:
+
+```json
+{
+  "tables": [
+    { "path_glob": "viewfs://nameservice/data/users/*", "namespace": "analytics", "table": "users" },
+    { "path_glob": "hdfs://realCluster/data/users/*",   "namespace": "analytics", "table": "users" }
+  ]
+}
+```
+
+### Scheme-less globs (backward compat)
+
+Glob patterns without a scheme and not starting with `/` (e.g., `*users*`, `data/*`) fall back to literal `fnmatch` against the raw `path_arg` string. This preserves legacy mapping files that pre-date URI awareness. New patterns should prefer explicit schemes.
+
+### Unknown schemes
+
+Unknown schemes (e.g., `ftp://`, custom enterprise schemes) emit a one-time stderr warning per scheme. They participate in matching only via exact `raw_scheme` equality — no aliasing applied.
+
 ## Known Limitations
 
 - **Structured Streaming** (readStream/writeStream with parquet/orc sinks) is **detected but not rewritten** — the transformer inserts a `TODO(iceberg)` comment. Migrate manually using `.format("iceberg")` + `writeStream.toTable("ns.t")` / `.option("path", ...)`.
