@@ -48,7 +48,7 @@ def convert_project(
         return 2
 
     fallback = Target(namespace=namespace, table=table_name) if (namespace and table_name) else None
-    resolver = build_resolver(mapping, fallback)
+    resolver = build_resolver(mapping, fallback, project_root=project_root)
 
     _run_hybrid(project_root, matches, resolver)
 
