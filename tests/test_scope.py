@@ -237,3 +237,65 @@ def test_java_reassignment_in_method():
     assert binding is not None
     assert binding.value is None
     assert binding.reason == "reassigned"
+
+
+def test_scala_object_val():
+    src = dedent('''
+        object Job {
+            val PATH = "s3://bucket/x"
+        }
+    ''').encode()
+    table = build_const_table(src, "scala", "Job.scala")
+    binding = table.resolve("PATH")
+    assert binding is not None
+    assert binding.value == "s3://bucket/x"
+
+
+def test_scala_var_skipped():
+    src = dedent('''
+        object Job {
+            var PATH = "s3://bucket/x"
+        }
+    ''').encode()
+    table = build_const_table(src, "scala", "Job.scala")
+    binding = table.resolve("PATH")
+    assert binding is None or binding.value is None
+
+
+def test_scala_def_local_val():
+    src = dedent('''
+        object Job {
+            def run(): Unit = {
+                val p = "s3://other"
+            }
+        }
+    ''').encode()
+    table = build_const_table(src, "scala", "Job.scala")
+    binding = table.resolve("p", scope_hint="run")
+    assert binding is not None
+    assert binding.value == "s3://other"
+
+
+def test_scala_val_concat():
+    src = dedent('''
+        object Job {
+            val BASE = "s3://bucket"
+            val PATH = BASE + "/events"
+        }
+    ''').encode()
+    table = build_const_table(src, "scala", "Job.scala")
+    assert table.resolve("PATH").value == "s3://bucket/events"
+
+
+def test_scala_reassignment_marks_unresolvable():
+    src = dedent('''
+        object Job {
+            val p = "s3://a"
+            val p = "s3://b"
+        }
+    ''').encode()
+    table = build_const_table(src, "scala", "Job.scala")
+    binding = table.resolve("p")
+    assert binding is not None
+    assert binding.value is None
+    assert binding.reason == "reassigned"

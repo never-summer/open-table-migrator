@@ -329,3 +329,140 @@ def _java_collector(root, source: bytes, file: str) -> ConstTable:
 
 
 _COLLECTORS["java"] = _java_collector
+
+
+def _scala_extract_string_literal(node, source: bytes) -> str | None:
+    """Return the string value of a Scala `string` node, or None.
+
+    Skips interpolated strings (s"...", f"...", raw"...") — those have
+    prefix characters before the quote.
+    """
+    if node.type != "string":
+        return None
+    text = source[node.start_byte:node.end_byte].decode()
+    if text.startswith('"') and text.endswith('"'):
+        return text[1:-1]
+    return None
+
+
+def _scala_scope_key(node, source: bytes) -> str:
+    """Walk up to enclosing function_definition. Return its name or 'module'."""
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "function_definition":
+            name_n = parent.child_by_field_name("name")
+            if name_n is not None:
+                return source[name_n.start_byte:name_n.end_byte].decode()
+            return "anonymous"
+        parent = parent.parent
+    return "module"
+
+
+def _scala_iter_val_definitions(root):
+    """Yield (definition_node, is_mutable) for every val/var in the file."""
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "val_definition":
+            yield node, False
+        elif node.type == "var_definition":
+            yield node, True
+        for child in reversed(node.children):
+            stack.append(child)
+
+
+def _scala_collector(root, source: bytes, file: str) -> ConstTable:
+    table = ConstTable()
+    seen: dict[tuple[str, str], int] = {}
+
+    def _add_or_reassign(scope: str, name: str, value: str | None,
+                         line: int, reason: str | None) -> None:
+        key = (scope, name)
+        if key in seen:
+            table.bindings[key] = ConstBinding(
+                name=name, value=None, file=file, line=line,
+                scope=scope, reason="reassigned",
+            )
+            seen[key] += 1
+            return
+        seen[key] = 1
+        table.bindings[key] = ConstBinding(
+            name=name, value=value, file=file, line=line,
+            scope=scope, reason=reason,
+        )
+
+    def _name_of(defn) -> str | None:
+        pat = defn.child_by_field_name("pattern")
+        if pat is None:
+            for child in defn.children:
+                if child.type == "identifier":
+                    return source[child.start_byte:child.end_byte].decode()
+            return None
+        if pat.type == "identifier":
+            return source[pat.start_byte:pat.end_byte].decode()
+        return None
+
+    def _rhs_of(defn):
+        return defn.child_by_field_name("value")
+
+    # Pass 1: literals
+    for defn, is_mutable in _scala_iter_val_definitions(root):
+        if is_mutable:
+            continue
+        name = _name_of(defn)
+        if name is None:
+            continue
+        rhs = _rhs_of(defn)
+        if rhs is None:
+            continue
+        literal = _scala_extract_string_literal(rhs, source)
+        if literal is None:
+            continue
+        scope = _scala_scope_key(defn, source)
+        line = defn.start_point[0] + 1
+        _add_or_reassign(scope, name, literal, line, reason=None)
+
+    # Pass 2: 1-level concat
+    for defn, is_mutable in _scala_iter_val_definitions(root):
+        if is_mutable:
+            continue
+        name = _name_of(defn)
+        if name is None:
+            continue
+        rhs = _rhs_of(defn)
+        if rhs is None or rhs.type != "infix_expression":
+            continue
+        op_n = rhs.child_by_field_name("operator")
+        if op_n is None or source[op_n.start_byte:op_n.end_byte] != b"+":
+            continue
+        left_n = rhs.child_by_field_name("left")
+        right_n = rhs.child_by_field_name("right")
+        if left_n is None or right_n is None:
+            continue
+        scope = _scala_scope_key(defn, source)
+        line = defn.start_point[0] + 1
+
+        def _resolve_operand(operand) -> str | None:
+            lit = _scala_extract_string_literal(operand, source)
+            if lit is not None:
+                return lit
+            if operand.type == "identifier":
+                op_name = source[operand.start_byte:operand.end_byte].decode()
+                lookup = table.resolve(op_name, scope_hint=scope)
+                if lookup is not None and lookup.value is not None:
+                    return lookup.value
+            return None
+
+        l_val = _resolve_operand(left_n)
+        r_val = _resolve_operand(right_n)
+        if l_val is None or r_val is None:
+            _add_or_reassign(scope, name, value=None, line=line,
+                             reason="dependency_unresolved")
+            continue
+        _add_or_reassign(scope, name, value=l_val + r_val, line=line,
+                         reason=None)
+
+    return table
+
+
+_COLLECTORS["scala"] = _scala_collector
