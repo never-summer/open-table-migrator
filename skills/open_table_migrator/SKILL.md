@@ -309,6 +309,59 @@ Without this the catalog grows unboundedly and old data files never get GC'd.
 
 **Note:** none of these procedures are written by the skill. They are a deployment concern — mention them after the rewrite is green, and let the user wire them into whatever scheduler they already use.
 
+## Path schemes
+
+The mapping resolver is URI-aware. Sub-scheme variants of the same storage are treated as equivalent:
+
+| Canonical scheme | Aliases | Example |
+|---|---|---|
+| `s3` | `s3a`, `s3n` | `s3://bucket/key` |
+| `hdfs` | `webhdfs` | `hdfs://nameservice/path` |
+| `abfs` | `abfss` | `abfs://container@account.dfs.core.windows.net/path` |
+| `gs` | — | `gs://bucket/key` |
+| `viewfs` | — (kept distinct from `hdfs`) | `viewfs://nameservice/path` |
+| `file` | bare paths (`/tmp/...`, `./data/...`) | `file:///tmp/x` |
+
+A mapping entry `s3://bucket/users/*` matches paths in the code regardless of whether the code writes `s3://`, `s3a://`, or `s3n://`. The same is true for `hdfs`/`webhdfs` and `abfs`/`abfss`.
+
+**`path_arg` in the worklist is preserved verbatim** — the equivalence is applied only when comparing against mapping globs.
+
+### Glob syntax
+
+Mapping patterns support shell-style globs in the authority and path components:
+
+- `*` matches any character sequence (including `/`) — same as `s3://bucket/users/*` matching `s3://bucket/users/2024/01/data.parquet`
+- `**` is provided for clarity and behaves the same as `*` in single-pattern matches
+- `?` matches one character
+- Brackets like `[abc]` are not supported
+
+This matches the convention used by `aws s3` and similar cloud-storage tools.
+
+### Bare local paths
+
+Bare paths (`./data/x`, `/tmp/fixtures/x`) are treated as `file://` for matching. Relative paths are resolved against the project root passed via the CLI.
+
+### viewfs limitation
+
+`viewfs://` is **not** auto-resolved against an underlying `hdfs://` cluster. Mount-point resolution depends on cluster config we do not read. If your project uses both `viewfs://` and `hdfs://` (e.g., logical mount in jobs, physical path in DDL), list both schemes explicitly in the mapping:
+
+```json
+{
+  "tables": [
+    { "path_glob": "viewfs://nameservice/data/users/*", "namespace": "analytics", "table": "users" },
+    { "path_glob": "hdfs://realCluster/data/users/*",   "namespace": "analytics", "table": "users" }
+  ]
+}
+```
+
+### Scheme-less globs (backward compat)
+
+Glob patterns without a scheme and not starting with `/` (e.g., `*users*`, `data/*`) fall back to `fnmatch` against the **full raw `path_arg` string** — including any scheme prefix. So `*users*` matches `s3://bucket/users/x` because the full raw string contains the literal substring `users`. This preserves legacy mapping files that pre-date URI awareness. New patterns should prefer explicit schemes for clarity.
+
+### Unknown schemes
+
+Unknown schemes (e.g., `ftp://`, custom enterprise schemes) emit a one-time stderr warning per scheme. They participate in matching only via exact `raw_scheme` equality — no aliasing applied.
+
 ## Known Limitations
 
 - **FQN propagation on read sites** — after rewriting `saveAsTable("Foo")` → `writeTo("ns.Foo")`, every downstream reference to the bare name (`spark.table("Foo")`, `CACHE TABLE Foo`, `SELECT ... FROM Foo`, `DROP TABLE Foo`) must be updated to the fully-qualified `ns.Foo`. Otherwise those calls resolve through the default session catalog and miss the Iceberg table entirely. The detector reports these reads, but the worklist does not automatically bind them to the write-site rewrite — walk each `spark_read_table` / SparkSQL match in the same file and rename by hand.

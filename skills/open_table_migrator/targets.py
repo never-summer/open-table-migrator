@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
 
+from . import uri
+
 
 Direction = Literal["read", "write", "schema", "any"]
 
@@ -102,7 +104,27 @@ def load_mapping(path: Path) -> Mapping:
 Resolver = Callable[[str | None, Direction], Decision]
 
 
-def build_resolver(mapping: Mapping | None, fallback: Target | None) -> Resolver:
+def _glob_needs_fallback(pattern: str) -> bool:
+    """Return True for scheme-less, non-absolute globs (e.g. ``*users*``, ``data/*``).
+
+    These patterns were historically matched with ``fnmatch.fnmatchcase`` against the
+    raw path_arg string.  ``uri.matches_glob`` canonicalises both sides, so a pattern
+    like ``*users*`` (no scheme → treated as a ``file://`` glob) would never match an
+    ``s3://`` URI.  We preserve the old behaviour for such patterns so that existing
+    mapping files with bare-wildcard globs continue to work.
+
+    A pattern is considered scheme-less if it contains neither ``://`` nor starts with
+    ``/``.
+    """
+    return "://" not in pattern and not pattern.startswith("/")
+
+
+def build_resolver(
+    mapping: Mapping | None,
+    fallback: Target | None,
+    *,
+    project_root: Path | None = None,
+) -> Resolver:
     """Return a resolver: (path_arg, direction) → Decision.
 
     Priority: first matching entry (glob + direction) → mapping default →
@@ -113,10 +135,17 @@ def build_resolver(mapping: Mapping | None, fallback: Target | None) -> Resolver
 
     def resolve(path_arg: str | None, direction: Direction = "any") -> Decision:
         if path_arg is not None:
+            parsed = uri.parse(path_arg, project_root=project_root)
             for entry in entries:
                 if entry.direction != "any" and direction != "any" and entry.direction != direction:
                     continue
-                if fnmatch.fnmatchcase(path_arg, entry.path_glob):
+                if _glob_needs_fallback(entry.path_glob):
+                    # Backward-compat: scheme-less globs are matched against the raw
+                    # path_arg string with fnmatch (same as the old behaviour).
+                    matched = fnmatch.fnmatchcase(path_arg, entry.path_glob)
+                else:
+                    matched = uri.matches_glob(parsed, entry.path_glob)
+                if matched:
                     if entry.skip:
                         return Decision.skipped()
                     assert entry.target is not None  # guaranteed by load_mapping

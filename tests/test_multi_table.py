@@ -155,3 +155,85 @@ def test_load_mapping_with_skip_and_direction(tmp_path: Path):
     assert m.entries[0].target is None
     assert m.entries[1].direction == "write"
     assert m.entries[1].target == Target("ns", "y")
+
+
+def test_hdfs_mapping_matches_webhdfs_paths_in_code(tmp_path):
+    """Mapping uses hdfs://; code uses webhdfs://. Sub-scheme equivalence
+    means the entry resolves both."""
+    from skills.open_table_migrator.targets import (
+        Mapping, MappingEntry, Target, build_resolver,
+    )
+
+    mapping = Mapping(
+        entries=[
+            MappingEntry(
+                path_glob="hdfs://nameservice/warehouse/users/*",
+                target=Target(namespace="analytics", table="users"),
+            ),
+        ],
+    )
+    resolver = build_resolver(mapping, fallback=None, project_root=tmp_path)
+
+    decision = resolver("webhdfs://nameservice/warehouse/users/2024/01.parquet")
+    assert decision.migrate_to == Target(namespace="analytics", table="users")
+    assert decision.skip is False
+
+
+def test_abfs_mapping_matches_abfss_paths(tmp_path):
+    from skills.open_table_migrator.targets import (
+        Mapping, MappingEntry, Target, build_resolver,
+    )
+
+    mapping = Mapping(
+        entries=[
+            MappingEntry(
+                path_glob="abfs://container@account.dfs.core.windows.net/data/*",
+                target=Target(namespace="cloud", table="events"),
+            ),
+        ],
+    )
+    resolver = build_resolver(mapping, fallback=None, project_root=tmp_path)
+
+    decision = resolver(
+        "abfss://container@account.dfs.core.windows.net/data/event.parquet",
+    )
+    assert decision.migrate_to == Target(namespace="cloud", table="events")
+
+
+def test_viewfs_requires_separate_mapping_from_hdfs(tmp_path):
+    """viewfs is NOT equivalent to hdfs. A user with both schemes in code
+    must list both in the mapping."""
+    from skills.open_table_migrator.targets import (
+        Decision, Mapping, MappingEntry, Target, build_resolver,
+    )
+
+    mapping = Mapping(
+        entries=[
+            MappingEntry(
+                path_glob="hdfs://ns/data/users/*",
+                target=Target(namespace="analytics", table="users"),
+            ),
+            MappingEntry(
+                path_glob="viewfs://ns/data/users/*",
+                target=Target(namespace="analytics", table="users"),
+            ),
+        ],
+    )
+    resolver = build_resolver(mapping, fallback=None, project_root=tmp_path)
+
+    hdfs_decision = resolver("hdfs://ns/data/users/x.parquet")
+    viewfs_decision = resolver("viewfs://ns/data/users/x.parquet")
+
+    assert hdfs_decision.migrate_to == Target(namespace="analytics", table="users")
+    assert viewfs_decision.migrate_to == Target(namespace="analytics", table="users")
+
+    only_hdfs = Mapping(
+        entries=[
+            MappingEntry(
+                path_glob="hdfs://ns/data/users/*",
+                target=Target(namespace="analytics", table="users"),
+            ),
+        ],
+    )
+    resolver2 = build_resolver(only_hdfs, fallback=None, project_root=tmp_path)
+    assert resolver2("viewfs://ns/data/users/x.parquet") == Decision.unresolved()
