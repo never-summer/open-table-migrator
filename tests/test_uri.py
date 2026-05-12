@@ -50,3 +50,40 @@ def test_parse_gs():
     assert parse("gs://bucket/x") == URI(
         scheme="gs", raw_scheme="gs", authority="bucket", path="/x",
     )
+
+
+def test_parse_absolute_bare_path_is_file():
+    assert parse("/tmp/x.parquet") == URI(
+        scheme="file", raw_scheme="", authority="", path="/tmp/x.parquet",
+    )
+
+
+def test_parse_relative_path_resolved_against_project_root():
+    assert parse("./data/x", project_root=Path("/proj")) == URI(
+        scheme="file", raw_scheme="", authority="", path="/proj/data/x",
+    )
+
+
+def test_parse_relative_path_without_project_root_kept_literal():
+    assert parse("./data/x") == URI(
+        scheme="file", raw_scheme="", authority="", path="./data/x",
+    )
+
+
+def test_parse_empty_string_returns_empty_file_uri():
+    assert parse("") == URI(
+        scheme="file", raw_scheme="", authority="", path="",
+    )
+
+
+def test_parse_unknown_scheme_warns_and_returns_unknown(capsys):
+    from skills.open_table_migrator import uri as uri_module
+    uri_module._UNKNOWN_WARNED.clear()
+    result = parse("ftp://host.example/x")
+    assert result == URI(
+        scheme="<unknown>", raw_scheme="ftp",
+        authority="host.example", path="/x",
+    )
+    captured = capsys.readouterr()
+    assert "ftp" in captured.err
+    assert "unknown URI scheme" in captured.err

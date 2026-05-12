@@ -50,6 +50,12 @@ def parse(s: str, *, project_root: Path | None = None) -> URI:
         canonical = "<unknown>"
     authority = parsed.netloc
     path = parsed.path
+
+    if canonical == "file" and raw_scheme == "" and project_root is not None:
+        if path and not path.startswith("/"):
+            from posixpath import normpath
+            path = normpath(str(project_root / path))
+
     return URI(
         scheme=canonical,
         raw_scheme=raw_scheme,
