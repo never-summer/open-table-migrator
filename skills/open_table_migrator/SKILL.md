@@ -550,6 +550,45 @@ Validation rules (e.g., requiring `--table` with `--namespace`) still apply in d
 
 Always 0 on successful dry-run. Pre-existing argument-validation errors still return exit code 2.
 
+## Phased migration runbook
+
+For each target Iceberg table found in the worklist, the migrator emits a per-table directory under `iceberg-runbook/` containing:
+
+- `migration-plan.md` — phase descriptions, pre-flight checklist, code-sites table, warnings
+- `phase1_add_files.sql` — Spark SQL for `system.add_files` (in-place metadata creation)
+- `phase2_rewrite.sql` — Spark SQL for `system.rewrite_data_files` (compaction)
+- `phase3_switchover.sql` — three OPTION blocks: Spark VIEW, HMS direct rename, Application-level rename per worklist
+
+Plus `iceberg-runbook/README.md` as a top-level index with a summary table of all migrations.
+
+### Phases
+
+| Phase | Estimated runtime | Risk |
+|---|---|---|
+| 1: add_files | minutes | Low — reversible by dropping target table |
+| 2: rewrite_data_files | hours | Medium — resource-heavy, can be deferred |
+| 3: switchover | minutes | Coordinated cutover — requires consumer alignment |
+
+### Phase 3 options
+
+Phase 3 has three switchover patterns. The user picks ONE per stack and comments out the others:
+
+- **OPTION A (Spark VIEW)** — replace old Hive table with a view pointing at Iceberg. Works for SELECT-only consumers; breaks `INSERT INTO` clients.
+- **OPTION B (HMS direct rename)** — atomic at metastore level. Requires admin access.
+- **OPTION C (Application-level rename)** — update each call site in the code per `lakehouse-worklist.json`. Listed in the SQL file as comments.
+
+### Automation
+
+Runbook generation runs alongside worklist generation on every `convert_project`. The `--dry-run` flag suppresses the directory write and prints the runbook contents as a 5th preview section.
+
+### Limitations
+
+- Spark SQL syntax only (no Trino, ClickHouse, Snowflake).
+- Schema in `phase1_add_files.sql` is a placeholder — the operator must run `spark.read.parquet(...).printSchema()` and paste the result.
+- No data-size estimation or runtime prediction.
+- No DAG between tables (each migration is independent).
+- `partition_mismatch` warning is included in the runbook, but the operator must decide which side (code or DDL) is correct.
+
 ## Known Limitations
 
 - **FQN propagation on read sites** — after rewriting `saveAsTable("Foo")` → `writeTo("ns.Foo")`, every downstream reference to the bare name (`spark.table("Foo")`, `CACHE TABLE Foo`, `SELECT ... FROM Foo`, `DROP TABLE Foo`) must be updated to the fully-qualified `ns.Foo`. Otherwise those calls resolve through the default session catalog and miss the Iceberg table entirely. The detector reports these reads, but the worklist does not automatically bind them to the write-site rewrite — walk each `spark_read_table` / SparkSQL match in the same file and rename by hand.
