@@ -65,7 +65,7 @@ _WRITE_TYPES = _OLD_WRITE_TYPES
 _SCHEMA_TYPES = _OLD_SCHEMA_TYPES
 
 
-# Patterns for which transformers only emit a TODO comment (not a full rewrite)
+# Patterns that emit a warn-only TODO in the worklist (streaming, pyarrow datasets)
 _WARN_ONLY_TYPES = {
     "pyspark_stream_read", "pyspark_stream_read_fmt",
     "pyspark_stream_write", "pyspark_stream_write_fmt",
@@ -421,10 +421,10 @@ def cross_reference_sql(
 
 def format_report(report: Report, *, project_root: Path) -> str:
     if report.total == 0:
-        return "No Parquet / Hive usage found."
+        return "No data I/O operations found."
 
     lines: list[str] = []
-    lines.append(f"Found {report.total} Parquet/ORC operation(s) across {len(report.by_file)} file(s):")
+    lines.append(f"Found {report.total} data I/O operation(s) across {len(report.by_file)} file(s):")
     lines.append("")
 
     lines.append("By direction:")

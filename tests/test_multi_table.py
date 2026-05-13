@@ -1,23 +1,16 @@
-"""Multi-table routing: path extraction, resolver, mapping loading, transformer integration."""
+"""Multi-table routing: path extraction, resolver, mapping loading."""
 import json
-import textwrap
 from pathlib import Path
 
 from skills.open_table_migrator.detector import detect_parquet_usage
 from skills.open_table_migrator.extract import extract_path_arg
 from skills.open_table_migrator.targets import (
-    Decision,
     Mapping,
     MappingEntry,
     Target,
     build_resolver,
     load_mapping,
 )
-from skills.open_table_migrator.transformers.pandas import transform_pandas_file
-from skills.open_table_migrator.transformers.pyspark import transform_pyspark_file
-from skills.open_table_migrator.transformers.pyarrow import transform_pyarrow_file
-from skills.open_table_migrator.transformers.jvm import transform_jvm_file
-from skills.open_table_migrator.cli import convert_project
 
 
 # ─── extract_path_arg ─────────────────────────────────────────────────
@@ -149,207 +142,6 @@ def test_detector_captures_none_for_variable_arg(tmp_path: Path):
     assert matches[0].path_arg is None
 
 
-# ─── Transformer with mapping: multi-table in one file ───────────────
-
-def test_pandas_multi_table_routing():
-    src = textwrap.dedent("""
-        import pandas as pd
-        events = pd.read_parquet("s3://bucket/events/2024")
-        users = pd.read_parquet("s3://bucket/users/list")
-        users.to_parquet("s3://bucket/users/backup")
-    """).lstrip()
-    mapping = Mapping(entries=[
-        MappingEntry("s3://bucket/events/*", Target("analytics", "events")),
-        MappingEntry("s3://bucket/users/*", Target("analytics", "users")),
-    ])
-    out = transform_pandas_file(src, mapping=mapping)
-    assert "pd.read_parquet" not in out
-    assert ".to_parquet(" not in out
-    assert "tbl_analytics_events" in out
-    assert "tbl_analytics_users" in out
-    assert 'load_table(("analytics", "events"))' in out
-    assert 'load_table(("analytics", "users"))' in out
-
-
-def test_pyspark_multi_table_routing():
-    src = textwrap.dedent("""
-        events = spark.read.parquet("s3://bucket/events/")
-        users = spark.read.parquet("s3://bucket/users/")
-        users.write.mode("overwrite").parquet("s3://bucket/users/out")
-    """).lstrip()
-    mapping = Mapping(entries=[
-        MappingEntry("s3://bucket/events/*", Target("analytics", "events")),
-        MappingEntry("s3://bucket/users/*", Target("analytics", "users")),
-    ])
-    out = transform_pyspark_file(src, mapping=mapping)
-    assert 'spark.table("analytics.events")' in out
-    assert 'spark.table("analytics.users")' in out
-    assert 'writeTo("analytics.users")' in out
-    assert ".read.parquet" not in out
-
-
-def test_jvm_multi_table_routing_java():
-    src = textwrap.dedent("""
-        Dataset<Row> events = spark.read().parquet("s3://bucket/events/");
-        Dataset<Row> users = spark.read().parquet("s3://bucket/users/");
-        users.write().mode("overwrite").parquet("s3://bucket/users/out");
-    """).lstrip()
-    mapping = Mapping(entries=[
-        MappingEntry("s3://bucket/events/*", Target("analytics", "events")),
-        MappingEntry("s3://bucket/users/*", Target("analytics", "users")),
-    ])
-    out = transform_jvm_file(src, language="java", mapping=mapping)
-    assert 'load("analytics.events")' in out
-    assert 'load("analytics.users")' in out
-    assert 'writeTo("analytics.users")' in out
-    assert ".parquet(" not in out
-
-
-def test_unresolvable_path_emits_todo():
-    src = 'import pandas as pd\ndf = pd.read_parquet(dynamic_path)\n'
-    mapping = Mapping(entries=[MappingEntry("s3://*", Target("ns", "t"))])
-    out = transform_pandas_file(src, mapping=mapping)
-    assert "TODO(iceberg): could not resolve target" in out
-    assert "pd.read_parquet(dynamic_path)" in out  # original line preserved
-
-
-def test_fallback_used_when_mapping_misses():
-    src = 'import pandas as pd\ndf = pd.read_parquet("local.parquet")\n'
-    mapping = Mapping(entries=[MappingEntry("s3://*", Target("cloud", "remote"))])
-    out = transform_pandas_file(src, mapping=mapping, namespace="default", table_name="local_fallback")
-    assert 'load_table(("default", "local_fallback"))' in out
-
-
-# ─── CLI end-to-end multi-table ───────────────────────────────────────
-
-def test_cli_multi_table_with_mapping(tmp_path: Path):
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    (proj / "etl.py").write_text(textwrap.dedent("""
-        import pandas as pd
-        events = pd.read_parquet("s3://bucket/events/2024")
-        users = pd.read_parquet("s3://bucket/users/list")
-    """).lstrip())
-
-    mapping_file = tmp_path / "mapping.json"
-    mapping_file.write_text(json.dumps({
-        "tables": [
-            {"path_glob": "s3://bucket/events/*", "namespace": "analytics", "table": "events"},
-            {"path_glob": "s3://bucket/users/*", "namespace": "analytics", "table": "users"},
-        ],
-    }))
-
-    mapping = load_mapping(mapping_file)
-    src = (proj / "etl.py").read_text()
-    rewritten = transform_pandas_file(src, mapping=mapping)
-    assert 'load_table(("analytics", "events"))' in rewritten
-    assert 'load_table(("analytics", "users"))' in rewritten
-    assert "pd.read_parquet" not in rewritten
-
-
-def test_cli_rejects_missing_config(tmp_path: Path):
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    (proj / "etl.py").write_text('import pandas as pd\ndf = pd.read_parquet("x.parquet")\n')
-    rc = convert_project(proj)  # no table/namespace, no mapping
-    assert rc == 2
-
-
-# ─── Single-table back-compat (no mapping) still works ───────────────
-
-def test_single_table_still_uses_plain_tbl():
-    src = 'import pandas as pd\ndf = pd.read_parquet("x.parquet")\n'
-    out = transform_pandas_file(src, table_name="events", namespace="default")
-    assert "tbl.scan().to_pandas()" in out
-    assert "tbl_default_events" not in out
-
-
-# ─── Skip + direction in transformers ────────────────────────────────
-
-def test_pandas_skip_leaves_line_untouched():
-    src = textwrap.dedent("""
-        import pandas as pd
-        keep = pd.read_parquet("s3://bucket/events/2024")
-        legacy = pd.read_parquet("s3://legacy/old.parquet")
-    """).lstrip()
-    mapping = Mapping(entries=[
-        MappingEntry("s3://bucket/events/*", Target("analytics", "events")),
-        MappingEntry("s3://legacy/*", target=None, skip=True),
-    ])
-    out = transform_pandas_file(src, mapping=mapping)
-    # The skipped line is preserved verbatim
-    assert 'pd.read_parquet("s3://legacy/old.parquet")' in out
-    assert "iceberg: skipped by mapping" in out
-    # The kept one is rewritten
-    assert "tbl.scan().to_pandas()" in out or 'load_table(("analytics", "events"))' in out
-
-
-def test_pyspark_direction_scoped_write_only():
-    src = textwrap.dedent("""
-        events = spark.read.parquet("s3://bucket/events/")
-        events.write.mode("overwrite").parquet("s3://bucket/events/")
-    """).lstrip()
-    # Migrate writes only; reads stay as parquet.
-    mapping = Mapping(entries=[
-        MappingEntry("s3://bucket/events/*", target=Target("analytics", "events"), direction="write"),
-        MappingEntry("s3://bucket/events/*", target=None, skip=True, direction="read"),
-    ])
-    out = transform_pyspark_file(src, mapping=mapping)
-    assert 'writeTo("analytics.events")' in out
-    # Read kept as parquet
-    assert 'spark.read.parquet("s3://bucket/events/")' in out
-    assert "iceberg: skipped by mapping" in out
-
-
-def test_jvm_skip_keeps_original():
-    src = textwrap.dedent("""
-        Dataset<Row> df = spark.read().parquet("s3://legacy/raw/");
-        df.write().mode("overwrite").parquet("s3://new/out/");
-    """).lstrip()
-    mapping = Mapping(entries=[
-        MappingEntry("s3://legacy/*", target=None, skip=True),
-        MappingEntry("s3://new/*", target=Target("analytics", "out")),
-    ])
-    out = transform_jvm_file(src, language="java", mapping=mapping)
-    assert 'spark.read().parquet("s3://legacy/raw/")' in out
-    assert "// iceberg: skipped by mapping" in out
-    assert 'writeTo("analytics.out")' in out
-
-
-def test_pyarrow_skip_keeps_original():
-    src = 'import pyarrow.parquet as pq\ntbl = pq.read_table("data/old.parquet")\n'
-    mapping = Mapping(entries=[MappingEntry("data/*", target=None, skip=True)])
-    out = transform_pyarrow_file(src, mapping=mapping)
-    assert 'pq.read_table("data/old.parquet")' in out
-    assert "iceberg: skipped by mapping" in out
-    # No catalog header should be emitted since nothing gets migrated
-    assert "load_catalog" not in out
-
-
-def test_cli_mapping_with_skip_entries(tmp_path: Path):
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    (proj / "etl.py").write_text(textwrap.dedent("""
-        import pandas as pd
-        keep = pd.read_parquet("s3://bucket/events/2024")
-        legacy = pd.read_parquet("s3://legacy/old.parquet")
-    """).lstrip())
-
-    mapping_file = tmp_path / "mapping.json"
-    mapping_file.write_text(json.dumps({
-        "tables": [
-            {"path_glob": "s3://bucket/events/*", "namespace": "analytics", "table": "events"},
-            {"path_glob": "s3://legacy/*", "skip": True},
-        ],
-    }))
-    mapping = load_mapping(mapping_file)
-    src = (proj / "etl.py").read_text()
-    rewritten = transform_pandas_file(src, mapping=mapping)
-    assert 'load_table(("analytics", "events"))' in rewritten
-    assert 'pd.read_parquet("s3://legacy/old.parquet")' in rewritten
-    assert "iceberg: skipped by mapping" in rewritten
-
-
 def test_load_mapping_with_skip_and_direction(tmp_path: Path):
     mapping_file = tmp_path / "mapping.json"
     mapping_file.write_text(json.dumps({
@@ -385,6 +177,88 @@ def test_mapping_matches_resolved_const_path(tmp_path):
             target=Target(namespace="analytics", table="users"),
         ),
     ])
-    resolver = build_resolver(mapping, fallback=None)
+    resolver = build_resolver(mapping, fallback=None, project_root=tmp_path)
     decision = resolver(pq_matches[0].path_arg, "read")
     assert decision.migrate_to == Target(namespace="analytics", table="users")
+
+
+def test_hdfs_mapping_matches_webhdfs_paths_in_code(tmp_path):
+    """Mapping uses hdfs://; code uses webhdfs://. Sub-scheme equivalence
+    means the entry resolves both."""
+    from skills.open_table_migrator.targets import (
+        Mapping, MappingEntry, Target, build_resolver,
+    )
+
+    mapping = Mapping(
+        entries=[
+            MappingEntry(
+                path_glob="hdfs://nameservice/warehouse/users/*",
+                target=Target(namespace="analytics", table="users"),
+            ),
+        ],
+    )
+    resolver = build_resolver(mapping, fallback=None, project_root=tmp_path)
+
+    decision = resolver("webhdfs://nameservice/warehouse/users/2024/01.parquet")
+    assert decision.migrate_to == Target(namespace="analytics", table="users")
+    assert decision.skip is False
+
+
+def test_abfs_mapping_matches_abfss_paths(tmp_path):
+    from skills.open_table_migrator.targets import (
+        Mapping, MappingEntry, Target, build_resolver,
+    )
+
+    mapping = Mapping(
+        entries=[
+            MappingEntry(
+                path_glob="abfs://container@account.dfs.core.windows.net/data/*",
+                target=Target(namespace="cloud", table="events"),
+            ),
+        ],
+    )
+    resolver = build_resolver(mapping, fallback=None, project_root=tmp_path)
+
+    decision = resolver(
+        "abfss://container@account.dfs.core.windows.net/data/event.parquet",
+    )
+    assert decision.migrate_to == Target(namespace="cloud", table="events")
+
+
+def test_viewfs_requires_separate_mapping_from_hdfs(tmp_path):
+    """viewfs is NOT equivalent to hdfs. A user with both schemes in code
+    must list both in the mapping."""
+    from skills.open_table_migrator.targets import (
+        Decision, Mapping, MappingEntry, Target, build_resolver,
+    )
+
+    mapping = Mapping(
+        entries=[
+            MappingEntry(
+                path_glob="hdfs://ns/data/users/*",
+                target=Target(namespace="analytics", table="users"),
+            ),
+            MappingEntry(
+                path_glob="viewfs://ns/data/users/*",
+                target=Target(namespace="analytics", table="users"),
+            ),
+        ],
+    )
+    resolver = build_resolver(mapping, fallback=None, project_root=tmp_path)
+
+    hdfs_decision = resolver("hdfs://ns/data/users/x.parquet")
+    viewfs_decision = resolver("viewfs://ns/data/users/x.parquet")
+
+    assert hdfs_decision.migrate_to == Target(namespace="analytics", table="users")
+    assert viewfs_decision.migrate_to == Target(namespace="analytics", table="users")
+
+    only_hdfs = Mapping(
+        entries=[
+            MappingEntry(
+                path_glob="hdfs://ns/data/users/*",
+                target=Target(namespace="analytics", table="users"),
+            ),
+        ],
+    )
+    resolver2 = build_resolver(only_hdfs, fallback=None, project_root=tmp_path)
+    assert resolver2("viewfs://ns/data/users/x.parquet") == Decision.unresolved()

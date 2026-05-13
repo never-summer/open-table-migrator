@@ -6,9 +6,78 @@ Skill + субагент для Claude Code.
 
 | | |
 |---|---|
-| **Детектор** | Tree-sitter AST — находит любой формат автоматически |
+| **Детектор** | Парсит код в AST (Abstract Syntax Tree) через tree-sitter; алгоритмический обход дерева находит все I/O |
 | **Миграция** | Parquet / ORC → Iceberg (протестировано), архитектура — any → any |
 | **Целевые форматы** | Iceberg сейчас, Paimon / Delta / Hudi / итд планируются |
+
+![I/O detection and migration](docs/assets/open_table_migrator_io_v6.svg)
+
+---
+
+## Быстрый старт
+
+### Вариант 1: Субагент в Claude Code
+
+Просто скажите агенту:
+
+> *возьми скилл из https://github.com/never-summer/open-table-migrator и давай проверим на проекте LearningSparkV2 — проведем анализ I/O*
+
+Агент подхватит скилл, запустит детектор и выдаст отчёт. Пример на [LearningSparkV2](https://github.com/databricks/LearningSparkV2):
+
+> **Обнаружено 11 I/O-операций в 7 файлах.**
+>
+> По направлению: **reads = 7**, **writes = 4**
+>
+> | Тип | Кол-во | Направление |
+> |---|---|---|
+> | `spark_read_csv` | 3 | read |
+> | `spark_read_table` | 2 | read |
+> | `hive_save_table` | 2 | write |
+> | `spark_read_parquet` | 1 | read |
+> | `spark_read_json` | 1 | read |
+> | `pandas_write_csv` | 1 | write |
+> | `stdlib_write_csv` | 1 | write |
+>
+> **Кандидаты на миграцию в Iceberg (формат-зависимые):**
+>
+> - `chapter7/scala/.../SortMergeJoinBucketed_7_6.scala:54` — `write.format("parquet")...saveAsTable("UsersTbl")` + `.bucketBy(8,"uid")`
+> - `chapter7/scala/.../SortMergeJoinBucketed_7_6.scala:62` — `write.format("parquet")...saveAsTable("OrdersTbl")` + `.bucketBy(8,"users_id")`
+> - `mlflow-project-example/train.py:24` — `spark.read.parquet(file_path)` (airbnb dataset)
+
+Дальше агент спрашивает по каждой таблице — мигрировать или оставить, в какой namespace/table — и выдаёт `lakehouse-worklist.json` для LLM, который переписывает код. После — повторный прогон детектора: ноль остаточных паттернов.
+
+[Субагент](.claude/agents/open-table-migrator.md) делает всё это автоматически по одной фразе: *"мигрируй на iceberg"* / *"migrate this project to iceberg"*.
+
+### Вариант 2: CLI (без LLM)
+
+Анализ проекта:
+
+```bash
+PYTHONPATH=. python -c "
+from pathlib import Path
+from skills.open_table_migrator.detector import detect_all_io
+from skills.open_table_migrator.analyzer import build_report, format_report
+
+matches = detect_all_io(Path('путь/к/проекту'))
+print(format_report(build_report(matches), project_root=Path('путь/к/проекту')))
+"
+```
+
+Миграция одной таблицы — выдаёт `lakehouse-worklist.json`:
+
+```bash
+PYTHONPATH=. python -m skills.open_table_migrator.cli путь/к/проекту \
+    --table events --namespace analytics
+```
+
+Миграция нескольких таблиц:
+
+```bash
+PYTHONPATH=. python -m skills.open_table_migrator.cli путь/к/проекту \
+    --mapping ./iceberg-mapping.json
+```
+
+Формат маппинга — в [SKILL.md](skills/open_table_migrator/SKILL.md#multi-table-projects).
 
 ---
 
@@ -43,122 +112,13 @@ AST-детектор находит операции, CLI выдает `lakehous
 
 ---
 
-## Быстрый старт
-
-### Вариант 1: Субагент в Claude Code
-
-Скажите:
-
-> *"проанализируй все чтения и записи в проекте"*
-> *"мигрируй на iceberg"*
-> *"migrate this project to iceberg"*
-
-[Субагент](.claude/agents/open-table-migrator.md) автоматически:
-1. Запустит детектор и покажет таблицу всех I/O-операций
-2. Просканирует SQL-файлы и покажет кросс-ссылки
-3. Спросит какие таблицы мигрировать, а какие оставить
-4. Выполнит миграцию по worklist
-5. Проверит результат — детектор должен вернуть ноль остаточных паттернов
-
-### Вариант 2: CLI
-
-Анализ (без LLM):
-
-```bash
-PYTHONPATH=. python -c "
-from pathlib import Path
-from skills.open_table_migrator.detector import detect_all_io
-from skills.open_table_migrator.analyzer import build_report, format_report
-
-matches = detect_all_io(Path('путь/к/проекту'))
-print(format_report(build_report(matches), project_root=Path('путь/к/проекту')))
-"
-```
-
-Миграция (одна таблица — выдает `lakehouse-worklist.json`):
-
-```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli путь/к/проекту \
-    --table events --namespace analytics
-```
-
-Миграция (несколько таблиц):
-
-```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli путь/к/проекту \
-    --mapping ./iceberg-mapping.json
-```
-
-Формат маппинга — в [SKILL.md](skills/open_table_migrator/SKILL.md#multi-table-projects).
-
----
-
-## Пример: LearningSparkV2
-
-Проект [LearningSparkV2](https://github.com/databricks/LearningSparkV2) — примеры из книги *Learning Spark*, ~30 Scala/Java/Python файлов с разнообразным Spark I/O.
-
-### Шаг 1: Анализ
-
-```
-> проанализируй все чтения и записи в LearningSparkV2
-```
-
-Детектор находит ~25 операций в 12 файлах:
-
-```
-Found 25 Parquet/ORC operation(s) across 12 file(s):
-
-By direction:
-  read   : 11
-  write  : 12
-  schema :  2
-
-Per-file breakdown:
-  chapter04/scala/src/main/scala/SparkJob.scala:
-    spark_write_parquet  (write)  line 54:59
-      usersDF — writes Parquet to UsersTbl [bucketBy(8, "uid"), partitionBy("region")]
-    spark_read_parquet   (read)   line 62:62
-      logsDF — reads Parquet from s3://bucket/logs
-  ...
-```
-
-Плюс кросс-ссылки с SQL:
-
-```
-SQL-defined tables with 2 code cross-reference(s):
-  SparkJob.scala:57  write 'UsersTbl'  — defined as parquet in schema.sql:3
-  SparkJob.scala:72  write 'EventsTbl' — defined as parquet in schema.sql:8
-```
-
-### Шаг 2: Решение по каждой таблице
-
-Агент спрашивает по каждому sink/source:
-
-> *Операция `write` на `UsersTbl` (2 call sites) — мигрировать на Iceberg? Namespace/table?*
-
-Пользователь отвечает:
-- `UsersTbl` → `analytics.users`
-- `EventsTbl` → `analytics.events`
-- `s3://bucket/logs` → оставить как есть (`skip: true`)
-
-### Шаг 3: Миграция
-
-```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli ./LearningSparkV2 \
-    --mapping iceberg-mapping.json
-```
-
-CLI выдает `lakehouse-worklist.json` с задачами для агента. Агент переписывает каждую операцию через `Edit`, затем перезапускает детектор — ноль остаточных паттернов.
-
----
-
 ## Тесты
 
 ```bash
 PYTHONPATH=. pytest tests/ --ignore=tests/fixtures -v
 ```
 
-236 тестов. Фикстуры в `tests/fixtures/` — входные данные, не тестовые модули.
+179 тестов. Фикстуры в `tests/fixtures/` — входные данные, не тестовые модули.
 
 ## Структура
 
@@ -171,18 +131,12 @@ skills/open_table_migrator/
 ├── analyzer.py           # Отчеты, дедупликация, SQL кросс-ссылки
 ├── sql_registry.py       # Реестр таблиц из .sql/.hql/.ddl
 ├── extract.py            # Извлечение path_arg, subject, описания
-├── folding.py            # Склейка многострочных цепочек (только для JVM-трансформера)
 ├── filters.py            # Фильтрация по направлению/паттерну/glob
 ├── targets.py            # Мульти-таблица: маппинг, резолвер
 ├── deps.py               # Обновление зависимостей (5 форматов)
 ├── prepass.py            # Skip-маркеры + pyspark conf
-├── worklist.py           # lakehouse-worklist.json (hybrid)
-├── cli.py                # CLI entry point
-└── transformers/
-    ├── pandas.py
-    ├── pyspark.py
-    ├── pyarrow.py
-    └── jvm.py            # Java + Scala
+├── worklist.py           # lakehouse-worklist.json builder
+└── cli.py                # CLI entry point
 
 .claude/agents/
 └── open-table-migrator.md  # Субагент
@@ -225,3 +179,159 @@ Regex-детектор сохранён в ветке `regex-detector`.
 - `partitionBy(...)` в JVM → TODO для ручного добавления в Iceberg partition spec
 
 Полный список — в [SKILL.md § Known Limitations](skills/open_table_migrator/SKILL.md#known-limitations).
+
+---
+
+# Sibling skill: data_lineage
+
+Column-level lineage для Spring Boot / jOOQ / JdbcTemplate / Spring Kafka / Spring Web проектов. Принцип тот же (tree-sitter + чистый Python), цель другая — построить граф потоков данных, не трогая код.
+
+Подробный reference — в [`skills/data_lineage/SKILL.md`](skills/data_lineage/SKILL.md). Дизайн — в [`docs/superpowers/specs/2026-05-07-data-lineage-design.md`](docs/superpowers/specs/2026-05-07-data-lineage-design.md).
+
+## Что покрывает
+
+| Источник / приёмник | Что детектится |
+|---|---|
+| jOOQ DSL | типизированные `TABLE.COLUMN` цепочки: `select` / `selectFrom` / `insertInto` / `update` / `deleteFrom` |
+| JdbcTemplate | SQL-литералы в `query` / `queryForObject` / `update` / `batchUpdate` / `execute` |
+| Spring Data | `@Query` (JPQL и `nativeQuery=true`) + derived методы (`findByEmail` → колонка `email`) |
+| Spring Kafka | `KafkaTemplate.send(...)` + `@KafkaListener(topics=...)` + payload DTO |
+| Spring Web | `@RestController` + `@GetMapping`/`@PostMapping`/etc. + `@RequestBody` + `RestClient` |
+| DTO | POJO-поля, Lombok `@Data`/`@Getter`, Jackson `@JsonProperty(name=...)`, `@JsonIgnore` |
+
+Не покрывается (Phase 5): Oracle stored procedures, Spring Cache (Ehcache), Avro/Protobuf-схемы.
+
+## Установка
+
+```bash
+# Если ещё не установлен open-table-migrator (deps общие):
+pip install -e ".[test]"
+```
+
+Дополнительная зависимость только одна — `sqlglot`. JVM не нужна.
+
+## Пример: synthetic-spring-app
+
+В репо лежит синтетический Spring Boot проект на 9 файлов в [`tests/data_lineage/fixtures/synthetic-spring-app/`](tests/data_lineage/fixtures/synthetic-spring-app/) — модули `api`, `app`, `db`, jOOQ-репозиторий, JdbcTemplate-репозиторий, Kafka producer + listener, REST controller, два DTO с `@JsonProperty(name="user_email")`. Хороший пример "что увидит инструмент".
+
+### Шаг 1: Анализ
+
+```bash
+PYTHONPATH=. python3 -m skills.data_lineage \
+    tests/data_lineage/fixtures/synthetic-spring-app \
+    --output /tmp/dl-demo
+```
+
+Создаются три файла:
+```
+/tmp/dl-demo/
+├── lineage-report.txt    # текстовый отчёт (то же что в stdout)
+├── lineage-graph.json    # полный граф (узлы + рёбра + unresolved)
+└── lineage.mmd           # Mermaid-диаграмма
+```
+
+Текстовый отчёт начинается с summary:
+```
+Lineage report — 41 nodes, 24 edges, 0 unresolved
+```
+
+### Шаг 2: Читаем confidence-секции
+
+Граф разбит на три уровня доверия. **HIGH** — извлечено напрямую из SQL/jOOQ DSL через AST:
+
+```
+=== HIGH confidence (8) ===
+  db.clients.id     --read-->   code.var.id      [db/.../ClientRepository.java:7]
+  db.clients.email  --read-->   code.var.email   [db/.../ClientRepository.java:7]
+  code.var.email    --write-->  db.clients.email [db/.../ClientRepository.java:10]
+  db.devices.mac    --read-->   code.var.mac     [db/.../DeviceRepository.java:5]
+  ...
+```
+
+Это типы рёбер где инструмент уверен на 100%: jOOQ `dsl.select(CLIENTS.ID, CLIENTS.EMAIL)` и JdbcTemplate `"SELECT id, mac, owner_id FROM devices"`.
+
+**MEDIUM** — построено через эвристики имён (Lombok-getter ↔ field, Jackson-rename, Spring Data method-name). Здесь живёт самое интересное — соединение SQL с Kafka-payload через DTO:
+
+```
+=== MEDIUM confidence (15) ===
+  code.var.dto.email      --transform-->  code.var.ev.email                [ClientService.java:7]
+  code.var.ev.email       --write-->      kafka.client-updates.user_email  [ClientService.java:8]
+  kafka.client-updates.user_email  --read-->  code.dto.com.example.dto.ClientUpdateEvent.email
+  http.GET:/clients/{id}.response.user_email  --read-->  code.dto.com.example.dto.ClientDto.email
+```
+
+Обрати внимание на `user_email` — это Jackson `@JsonProperty("user_email")` на поле `email`. Если бы аннотации не было, в графе было бы `kafka.client-updates.email`. Эта детализация ради того, чтобы граф соответствовал тому что реально летит на проводе, а не Java-имени поля.
+
+**LOW** — Java DFA не смогла резолвить целевой DTO. В нашем фикстуре сюда попадает RestClient-вызов, payload-тип которого мы не вычислили:
+
+```
+=== LOW confidence (1) ===
+  code.var.dto  --write-->  http.POST:/notify  [ClientService.java:11]
+```
+
+Граф соединил `dto` с эндпоинтом, но не пробросил поля DTO в `http.POST:/notify.request.*`. Это explicit граница автоматики — пользователь видит что вот тут не дотащили.
+
+### Шаг 3: Mermaid-визуализация
+
+`lineage.mmd` — самодостаточный flowchart, открывается в любом Markdown-просмотрщике (GitHub, Obsidian, Mermaid Live):
+
+```mermaid
+flowchart LR
+  db_clients_email["db.clients.email"]
+  code_var_dto_email["code.var.dto.email"]
+  code_var_ev_email["code.var.ev.email"]
+  kafka_client_updates_user_email["kafka.client-updates.user_email"]
+  db_clients_email -.-> code_var_dto_email
+  code_var_dto_email -.-> code_var_ev_email
+  code_var_ev_email ==> kafka_client_updates_user_email
+```
+
+На реальном проекте полный mmd быстро становится нечитаемым (сотни узлов). Используй фильтры — см. шаг 4.
+
+### Шаг 4: Фильтры
+
+Свести граф до окрестности конкретной таблицы:
+
+```bash
+PYTHONPATH=. python3 -m skills.data_lineage <project> \
+    --output /tmp/dl-clients --only-table clients
+```
+
+Аналогично — `--only-topic client-updates`, `--max-depth 2` (BFS-радиус от seed-узлов).
+
+### Шаг 5: `--debug` для отладки
+
+Если на реальном проекте граф выглядит странно, прогон с `--debug` пишет промежуточные стейджи пайплайна:
+
+```bash
+PYTHONPATH=. python3 -m skills.data_lineage <project> --output /tmp/dl --debug --quiet
+ls /tmp/dl/debug/
+# 01-symbol-table.json    # все DTO классы что нашёл project_scan
+# 02-sql-units.json       # SQL-литералы и jOOQ-цепочки от sql_extract
+# 03-sql-edges.json       # column-edges от sqlglot
+# 04-java-edges.json      # DFA-edges
+```
+
+Можно посмотреть какой именно SQL не распарсился, какой DTO не нашёлся, и т.д.
+
+## Через субагента
+
+Если работаешь в Claude Code — есть готовый субагент. Триггерные фразы:
+
+> *"проанализируй data lineage в проекте"*
+> *"построй граф потоков данных"*
+> *"build data lineage for this project"*
+
+Субагент запустит CLI, парснет отчёт, покажет summary, даст разобрать low-confidence рёбра и unresolved-секции, по запросу отрендерит подграф.
+
+## Ограничения
+
+Жёстко не разбираемые случаи попадают в секцию `unresolved`:
+- SQL собранный через `StringBuilder` / `String.format` / `String.join`
+- MapStruct-мапперы и кастомные Jackson-сериализаторы
+- Reflection-сериализация
+- Stored procedures (Phase 5)
+
+Cross-table контаминация фильтров: `--only-table X` ходит BFS через `code.var.*` узлы; если две таблицы делят имя переменной (например, `id` есть в обеих), подграф может включить обе. Это by design — переменные глобальны в области анализа. Используй `--max-depth 1` для жёсткого scope.
+
+Полный список ограничений и confidence-семантика — в [SKILL.md](skills/data_lineage/SKILL.md).

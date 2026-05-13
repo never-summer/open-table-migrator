@@ -7,9 +7,6 @@ from skills.open_table_migrator.analyzer import find_ddl_references
 from skills.open_table_migrator.cli import convert_project
 from skills.open_table_migrator.deps import update_dependencies
 from skills.open_table_migrator.detector import detect_parquet_usage
-from skills.open_table_migrator.transformers.pandas import transform_pandas_file
-from skills.open_table_migrator.transformers.pyarrow import transform_pyarrow_file
-from skills.open_table_migrator.transformers.pyspark import transform_pyspark_file
 
 
 # ─── A2 / A3: multi-line JVM chain folding ───────────────────────────
@@ -108,76 +105,6 @@ def test_update_dependencies_scans_nested_modules(tmp_path: Path):
 def test_update_dependencies_returns_empty_when_nothing_found(tmp_path: Path):
     updated = update_dependencies(tmp_path)
     assert updated == []
-
-
-# ─── A5: pyiceberg import dedup ──────────────────────────────────────
-
-def test_pandas_does_not_inject_import_when_no_pandas_ops():
-    """File with only pyspark ops should NOT get a pandas/pyarrow pyiceberg import."""
-    src = textwrap.dedent("""
-        from pyspark.sql import SparkSession
-        spark = SparkSession.builder.getOrCreate()
-        df = spark.read.parquet("data/")
-    """).lstrip()
-    out = transform_pandas_file(src, table_name="t", namespace="ns")
-    assert out.count("from pyiceberg.catalog import load_catalog") == 0
-    # pandas transformer should be a no-op when there are no pandas calls
-    assert out == src
-
-
-def test_pyarrow_does_not_inject_import_when_no_pyarrow_ops():
-    src = textwrap.dedent("""
-        from pyspark.sql import SparkSession
-        spark = SparkSession.builder.getOrCreate()
-        df = spark.read.parquet("data/")
-    """).lstrip()
-    out = transform_pyarrow_file(src, table_name="t", namespace="ns")
-    assert out.count("from pyiceberg.catalog import load_catalog") == 0
-    assert out == src
-
-
-def test_pandas_does_not_duplicate_existing_import():
-    src = textwrap.dedent("""
-        import pandas as pd
-        from pyiceberg.catalog import load_catalog
-        df = pd.read_parquet("data.parquet")
-    """).lstrip()
-    out = transform_pandas_file(src, table_name="events", namespace="default")
-    assert out.count("from pyiceberg.catalog import load_catalog") == 1
-
-
-def test_cli_running_pandas_then_pyarrow_adds_one_import(tmp_path: Path):
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    (proj / "etl.py").write_text(textwrap.dedent("""
-        import pandas as pd
-        import pyarrow.parquet as pq
-        df = pd.read_parquet("a.parquet")
-        t = pq.read_table("b.parquet")
-    """).lstrip())
-    from skills.open_table_migrator.transformers.pandas import transform_pandas_file
-    from skills.open_table_migrator.transformers.pyarrow import transform_pyarrow_file
-    src = (proj / "etl.py").read_text()
-    src = transform_pandas_file(src, table_name="events", namespace="default")
-    src = transform_pyarrow_file(src, table_name="events", namespace="default")
-    assert src.count("from pyiceberg.catalog import load_catalog") == 1
-
-
-# ─── A6: multi-line _ICEBERG_CONF_COMMENT indent ─────────────────────
-
-def test_pyspark_conf_comment_indent_preserved_in_function_body():
-    src = textwrap.dedent("""
-        def load():
-            df = spark.read.parquet("data/")
-            return df
-    """).lstrip()
-    out = transform_pyspark_file(src, table_name="events", namespace="default")
-    lines = out.splitlines()
-    # Every conf-comment line should be indented to match the block (4 spaces)
-    conf_lines = [l for l in lines if "Iceberg:" in l or "IcebergSparkSessionExtensions" in l or "SparkSessionCatalog" in l]
-    assert len(conf_lines) == 3
-    for line in conf_lines:
-        assert line.startswith("    "), f"Expected indent, got: {line!r}"
 
 
 # ─── A9: PatternMatch.direction property ─────────────────────────────

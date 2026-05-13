@@ -64,11 +64,17 @@ Before converting, ask:
 - **Catalog type** — local SQLite (dev), Hive Metastore, AWS Glue, REST?
 - **For JVM projects:** does the target Spark cluster already have `iceberg-spark-runtime` on the classpath, or should we add it?
 
-### 4. Run the Conversion
+### 4. Generate the Worklist, Then Rewrite
+
+The CLI does **not** rewrite code on its own. It runs the detector, resolves each match against the user's table mapping, updates dependency manifests, and emits `lakehouse-worklist.json` — a per-call-site task list for the agent/LLM to execute via `Edit`.
 
 ```bash
 python -m skills.open_table_migrator.cli <project_path> --table <TABLE_NAME> --namespace <NAMESPACE>
+# or, for multi-table projects:
+python -m skills.open_table_migrator.cli <project_path> --mapping ./lakehouse-mapping.json
 ```
+
+After the worklist is written, the agent walks each task and applies the rewrite using the Conversion Reference tables below. When all tasks are done, rerun the detector — the migrated patterns should be gone, and only `skip: true` entries or `TODO(iceberg)` markers remain.
 
 ### 5. Review and Fix Edge Cases
 
@@ -173,8 +179,9 @@ git commit -m "refactor: migrate parquet read/write to Apache Iceberg"
 | `spark.read().format("parquet"\|"orc").load("p")` | `spark.read().format("iceberg").load("ns.table")` |
 | `df.write().mode("overwrite").parquet("p")` / `.orc("p")` | `df.writeTo("ns.table").overwritePartitions()` |
 | `df.write()...format("parquet"\|"orc").save("p")` | `df.writeTo("ns.table").overwritePartitions()` |
-| `df.write().saveAsTable("t")` | `df.writeTo("ns.t").createOrReplace()` |
-| `df.write().partitionBy("day").parquet(...)` | `df.writeTo("ns.t").overwritePartitions()` *(+ TODO comment for partition spec)* |
+| `df.write().saveAsTable("t")` *(no partitionBy / bucketBy)* | `df.writeTo("ns.t").createOrReplace()` |
+| `df.write().partitionBy(...).saveAsTable("t")` / `.bucketBy(...).saveAsTable("t")` | **Two steps:** (1) pre-create `CREATE TABLE ns.t (...) USING iceberg PARTITIONED BY (...)` with the desired Iceberg partition spec; (2) rewrite call site as `df.writeTo("ns.t").overwritePartitions()`. `createOrReplace()` would silently drop the spec. |
+| `df.write().partitionBy("day").parquet(...)` | `df.writeTo("ns.t").overwritePartitions()` *(+ TODO comment — user must pre-create the table with the right partition spec)* |
 | `spark.readStream()....parquet\|orc\|format(...)` | *(TODO comment — manual migration)* |
 
 | Before (Scala) | After (Iceberg) |
@@ -191,7 +198,8 @@ git commit -m "refactor: migrate parquet read/write to Apache Iceberg"
 | `"CREATE TABLE t (...) STORED AS PARQUET\|ORC"` | `"CREATE TABLE t (...) USING iceberg"` |
 | `"CREATE [EXTERNAL] TABLE t (...) STORED AS PARQUET LOCATION '...'"` | `"CREATE TABLE t (...) USING iceberg LOCATION '...'"` *(review LOCATION semantics manually)* |
 | `"CREATE TABLE t (...) USING parquet\|orc"` | `"CREATE TABLE t (...) USING iceberg"` |
-| `df.write().saveAsTable("t")` | `df.writeTo("ns.t").createOrReplace()` |
+| `df.write().saveAsTable("t")` *(no partitionBy / bucketBy)* | `df.writeTo("ns.t").createOrReplace()` |
+| `df.write().bucketBy(...).saveAsTable("t")` / `.partitionBy(...).saveAsTable("t")` | Pre-create `CREATE TABLE ns.t (...) USING iceberg PARTITIONED BY (bucket(N, col))` then `df.writeTo("ns.t").overwritePartitions()`. **Do not** use `createOrReplace()` here — it resets the partition spec. |
 | `"INSERT INTO TABLE t ..."` / `"INSERT OVERWRITE TABLE t ..."` | *(no change — Spark handles Iceberg tables via the same SQL, assuming catalog is configured)* |
 | Existing Hive table with data | `CALL catalog.system.migrate('db.t')` — manual step |
 
@@ -231,7 +239,128 @@ Run it:
 python -m skills.open_table_migrator.cli <project> --mapping mapping.json
 ```
 
-In a single source file with multiple targets, the Python transformers emit one `catalog = ...` header plus one `tbl_<ns>_<name>` per target, and rewrite each call site to use the right variable. Calls whose path is a variable or doesn't match any glob (and has no fallback) become `# TODO(iceberg): could not resolve target ...` comments.
+In a single source file with multiple targets, the worklist emits one entry per call site with the resolved `(namespace, table)`. Calls whose path is a variable or doesn't match any glob (and has no fallback) are flagged as unresolved so the LLM rewriter surfaces them to the user.
+
+## Post-Migration Operational Concerns
+
+The skill rewrites **code**, not the operational model of the tables. After the migration lands, surface these three questions to the user — they change how the tables behave in production.
+
+### 1. Format version & write mode (Copy-on-Write vs Merge-on-Read)
+
+MoR/CoW is a **table property**, not a code choice. `INSERT` / `append` / `overwritePartitions()` are unaffected — the mode only changes how `UPDATE` / `DELETE` / `MERGE INTO` materialize changes.
+
+```sql
+ALTER TABLE ns.events SET TBLPROPERTIES (
+  'format-version'       = '2',               -- required for MoR
+  'write.update.mode'    = 'merge-on-read',   -- or 'copy-on-write'
+  'write.delete.mode'    = 'merge-on-read',
+  'write.merge.mode'     = 'merge-on-read'
+);
+```
+
+| | Copy-on-Write (default pre-v2) | Merge-on-Read (v2) |
+|---|---|---|
+| What is written on UPDATE/DELETE | Fully rewritten data files | Original files + position/equality delete files |
+| Write latency | High (rewrite partition) | Low |
+| Read latency | Low | Higher — reader applies deletes on the fly |
+| Use when | Rare updates, read-heavy analytics | Frequent upserts, CDC, streaming |
+
+Ask the user whether the table has row-level mutations before defaulting; if it does, MoR + v2 is usually the right pick.
+
+### 2. Compaction
+
+Iceberg compaction is a **procedure call**, not a background process. Nothing auto-compacts unless the user runs one of:
+
+```sql
+-- Bin-pack or sort small files, apply pending deletes (for MoR)
+CALL catalog.system.rewrite_data_files(
+  table   => 'ns.events',
+  strategy => 'binpack',
+  options => map('min-input-files','5','target-file-size-bytes','536870912')
+);
+
+-- Compact the manifest list (speeds up scan planning)
+CALL catalog.system.rewrite_manifests('ns.events');
+```
+
+**Where it runs:** any Spark session with `iceberg-spark-runtime` and catalog access. Typical deployment patterns:
+
+- **Airflow / Dagster DAG** — scheduled `rewrite_data_files` every N hours
+- **Streaming job post-hook** — compact after each micro-batch commit window
+- **Managed catalog** — Tabular, Snowflake Polaris, AWS Glue and Dremio can run compaction for you; no user job needed
+- **Ad-hoc cron** — plain `spark-submit` on a schedule
+
+Compaction does not block writers — it creates a new snapshot and the old files remain until expiration.
+
+### 3. Snapshot expiration & orphan cleanup
+
+Iceberg keeps old snapshots forever unless told otherwise. Two calls every user should schedule (usually together with `rewrite_data_files`):
+
+```sql
+CALL catalog.system.expire_snapshots(
+  table => 'ns.events',
+  older_than => TIMESTAMP '2026-04-01 00:00:00'
+);
+
+CALL catalog.system.remove_orphan_files(table => 'ns.events');
+```
+
+Without this the catalog grows unboundedly and old data files never get GC'd.
+
+**Note:** none of these procedures are written by the skill. They are a deployment concern — mention them after the rewrite is green, and let the user wire them into whatever scheduler they already use.
+
+## Path schemes
+
+The mapping resolver is URI-aware. Sub-scheme variants of the same storage are treated as equivalent:
+
+| Canonical scheme | Aliases | Example |
+|---|---|---|
+| `s3` | `s3a`, `s3n` | `s3://bucket/key` |
+| `hdfs` | `webhdfs` | `hdfs://nameservice/path` |
+| `abfs` | `abfss` | `abfs://container@account.dfs.core.windows.net/path` |
+| `gs` | — | `gs://bucket/key` |
+| `viewfs` | — (kept distinct from `hdfs`) | `viewfs://nameservice/path` |
+| `file` | bare paths (`/tmp/...`, `./data/...`) | `file:///tmp/x` |
+
+A mapping entry `s3://bucket/users/*` matches paths in the code regardless of whether the code writes `s3://`, `s3a://`, or `s3n://`. The same is true for `hdfs`/`webhdfs` and `abfs`/`abfss`.
+
+**`path_arg` in the worklist is preserved verbatim** — the equivalence is applied only when comparing against mapping globs.
+
+### Glob syntax
+
+Mapping patterns support shell-style globs in the authority and path components:
+
+- `*` matches any character sequence (including `/`) — same as `s3://bucket/users/*` matching `s3://bucket/users/2024/01/data.parquet`
+- `**` is provided for clarity and behaves the same as `*` in single-pattern matches
+- `?` matches one character
+- Brackets like `[abc]` are not supported
+
+This matches the convention used by `aws s3` and similar cloud-storage tools.
+
+### Bare local paths
+
+Bare paths (`./data/x`, `/tmp/fixtures/x`) are treated as `file://` for matching. Relative paths are resolved against the project root passed via the CLI.
+
+### viewfs limitation
+
+`viewfs://` is **not** auto-resolved against an underlying `hdfs://` cluster. Mount-point resolution depends on cluster config we do not read. If your project uses both `viewfs://` and `hdfs://` (e.g., logical mount in jobs, physical path in DDL), list both schemes explicitly in the mapping:
+
+```json
+{
+  "tables": [
+    { "path_glob": "viewfs://nameservice/data/users/*", "namespace": "analytics", "table": "users" },
+    { "path_glob": "hdfs://realCluster/data/users/*",   "namespace": "analytics", "table": "users" }
+  ]
+}
+```
+
+### Scheme-less globs (backward compat)
+
+Glob patterns without a scheme and not starting with `/` (e.g., `*users*`, `data/*`) fall back to `fnmatch` against the **full raw `path_arg` string** — including any scheme prefix. So `*users*` matches `s3://bucket/users/x` because the full raw string contains the literal substring `users`. This preserves legacy mapping files that pre-date URI awareness. New patterns should prefer explicit schemes for clarity.
+
+### Unknown schemes
+
+Unknown schemes (e.g., `ftp://`, custom enterprise schemes) emit a one-time stderr warning per scheme. They participate in matching only via exact `raw_scheme` equality — no aliasing applied.
 
 ## Constant folding
 
@@ -264,6 +393,8 @@ When a match resolves a name, `match.attrs["resolved_from"] = "NAME@file:line"` 
 
 ## Known Limitations
 
+- **FQN propagation on read sites** — after rewriting `saveAsTable("Foo")` → `writeTo("ns.Foo")`, every downstream reference to the bare name (`spark.table("Foo")`, `CACHE TABLE Foo`, `SELECT ... FROM Foo`, `DROP TABLE Foo`) must be updated to the fully-qualified `ns.Foo`. Otherwise those calls resolve through the default session catalog and miss the Iceberg table entirely. The detector reports these reads, but the worklist does not automatically bind them to the write-site rewrite — walk each `spark_read_table` / SparkSQL match in the same file and rename by hand.
+- **Partitioning and bucketing** — `partitionBy(...)` / `bucketBy(...)` on a write is preserved as a `TODO(iceberg)` comment, never auto-rewritten. If the original table was partitioned or bucketed, **ask the user** in Step 3 whether the layout matters, then pre-create the Iceberg table with the matching partition spec (`PARTITIONED BY (bucket(N, col))` / `PARTITIONED BY (days(col))`) before letting the rewrite run. Using `createOrReplace()` on a saveAsTable with bucketing silently drops the spec.
 - **Structured Streaming** (readStream/writeStream with parquet/orc sinks) is **detected but not rewritten** — the transformer inserts a `TODO(iceberg)` comment. Migrate manually using `.format("iceberg")` + `writeStream.toTable("ns.t")` / `.option("path", ...)`.
 - **pyarrow dataset API** (`ParquetFile`, `ParquetDataset`, `pa.dataset.*`) is also warn-only — rewrite to `catalog.load_table(...).scan().to_arrow()` by hand.
 - **Cloud catalog configs** (Glue, Nessie, REST) need manual setup — this tool generates SQLite dev config for Python, and leaves JVM catalog config untouched
