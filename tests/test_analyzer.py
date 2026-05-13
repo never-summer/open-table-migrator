@@ -97,3 +97,130 @@ def test_is_migration_candidate_new_taxonomy():
     assert is_migration_candidate("pandas_write_json") is False
     assert is_migration_candidate("hive_create_parquet") is True
     assert is_migration_candidate("hive_create_orc") is True
+
+
+def test_cross_reference_dynamic_sql_with_create_in_same_file(tmp_path):
+    (tmp_path / "queries").mkdir()
+    schema_path = tmp_path / "queries" / "events.sql"
+    schema_path.write_text("CREATE TABLE events (id INT) STORED AS PARQUET;")
+    (tmp_path / "job.py").write_text(
+        'import pandas as pd\n'
+        'sql = open("queries/events.sql").read()\n'
+    )
+
+    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.sql_registry import (
+        scan_sql_files, scan_sql_table_references,
+    )
+
+    loaders = detect_dynamic_sql_loaders(tmp_path)
+    defs = scan_sql_files(tmp_path)
+    refs = scan_sql_table_references(tmp_path)
+    cross = cross_reference_dynamic_sql(loaders, defs, refs, tmp_path)
+    assert len(cross) == 1
+    assert cross[0].loader.sql_filename == "queries/events.sql"
+    assert cross[0].match_kind == "exact_path"
+    assert len(cross[0].tables) == 1
+    assert cross[0].tables[0].table_name == "events"
+
+
+def test_cross_reference_dynamic_sql_create_in_different_file(tmp_path):
+    """schema.sql has CREATE; queries/events_update.sql has INSERT only.
+    Loader of events_update.sql should still cross-ref to the events table."""
+    (tmp_path / "schema.sql").write_text("CREATE TABLE events (id INT) STORED AS PARQUET;")
+    (tmp_path / "queries").mkdir()
+    (tmp_path / "queries" / "events_update.sql").write_text(
+        "INSERT INTO events SELECT 1;"
+    )
+    (tmp_path / "job.py").write_text(
+        'sql = open("queries/events_update.sql").read()\n'
+    )
+
+    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.sql_registry import (
+        scan_sql_files, scan_sql_table_references,
+    )
+
+    loaders = detect_dynamic_sql_loaders(tmp_path)
+    defs = scan_sql_files(tmp_path)
+    refs = scan_sql_table_references(tmp_path)
+    cross = cross_reference_dynamic_sql(loaders, defs, refs, tmp_path)
+    assert len(cross) == 1
+    assert cross[0].tables[0].table_name == "events"
+    assert cross[0].tables[0].format == "parquet"
+
+
+def test_cross_reference_dynamic_sql_loader_with_no_registry_match(tmp_path):
+    """Loader points at file not in registry → no cross-ref returned."""
+    (tmp_path / "job.py").write_text(
+        'sql = open("queries/missing.sql").read()\n'
+    )
+    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.sql_registry import (
+        scan_sql_files, scan_sql_table_references,
+    )
+
+    loaders = detect_dynamic_sql_loaders(tmp_path)
+    defs = scan_sql_files(tmp_path)
+    refs = scan_sql_table_references(tmp_path)
+    cross = cross_reference_dynamic_sql(loaders, defs, refs, tmp_path)
+    assert cross == []
+    # But the loader itself was detected:
+    assert len(loaders) == 1
+
+
+def test_cross_reference_dynamic_sql_basename_unique(tmp_path):
+    """Loader uses basename only; project has unique file with that name."""
+    (tmp_path / "subdir").mkdir()
+    (tmp_path / "subdir" / "events.sql").write_text(
+        "CREATE TABLE events (id INT) STORED AS PARQUET;"
+    )
+    (tmp_path / "job.py").write_text(
+        'sql = open("events.sql").read()\n'
+    )
+
+    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.sql_registry import (
+        scan_sql_files, scan_sql_table_references,
+    )
+
+    loaders = detect_dynamic_sql_loaders(tmp_path)
+    defs = scan_sql_files(tmp_path)
+    refs = scan_sql_table_references(tmp_path)
+    cross = cross_reference_dynamic_sql(loaders, defs, refs, tmp_path)
+    assert len(cross) == 1
+    assert cross[0].match_kind == "basename_unique"
+
+
+def test_cross_reference_dynamic_sql_basename_ambiguous(tmp_path):
+    """Two events.sql in different dirs — basename resolution returns both."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "events.sql").write_text(
+        "CREATE TABLE events_a (id INT) STORED AS PARQUET;"
+    )
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "events.sql").write_text(
+        "CREATE TABLE events_b (id INT) STORED AS PARQUET;"
+    )
+    (tmp_path / "job.py").write_text(
+        'sql = open("events.sql").read()\n'
+    )
+
+    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.sql_registry import (
+        scan_sql_files, scan_sql_table_references,
+    )
+
+    loaders = detect_dynamic_sql_loaders(tmp_path)
+    defs = scan_sql_files(tmp_path)
+    refs = scan_sql_table_references(tmp_path)
+    cross = cross_reference_dynamic_sql(loaders, defs, refs, tmp_path)
+    table_names = {t.table_name for c in cross for t in c.tables}
+    assert "events_a" in table_names
+    assert "events_b" in table_names
+    assert all(c.match_kind == "basename_ambiguous" for c in cross)

@@ -419,6 +419,85 @@ def cross_reference_sql(
     return refs
 
 
+from .dynamic_sql import DynamicSqlLoader
+from .sql_registry import TableDef, TableReference
+
+
+@dataclass(frozen=True)
+class DynamicSqlCrossRef:
+    loader: DynamicSqlLoader
+    sql_file: Path
+    tables: tuple[TableDef, ...]
+    match_kind: str  # "exact_path" | "basename_unique" | "basename_ambiguous"
+
+
+def _resolve_sql_file(
+    loader: DynamicSqlLoader,
+    sql_files: set[Path],
+    project_root: Path,
+) -> tuple[list[Path], str]:
+    """Resolve loader.sql_filename to one or more registered SQL files.
+
+    Tries in order:
+      1. relative to loader's containing file's directory
+      2. relative to project_root
+      3. basename match across registered files
+    """
+    filename = loader.sql_filename.lstrip("/")
+    candidate = (loader.file.parent / filename).resolve()
+    if candidate in sql_files:
+        return [candidate], "exact_path"
+    candidate = (project_root / filename).resolve()
+    if candidate in sql_files:
+        return [candidate], "exact_path"
+    basename = Path(filename).name
+    basename_matches = [f for f in sql_files if f.name == basename]
+    if len(basename_matches) == 1:
+        return basename_matches, "basename_unique"
+    if len(basename_matches) > 1:
+        return basename_matches, "basename_ambiguous"
+    return [], "none"
+
+
+def cross_reference_dynamic_sql(
+    loaders: list[DynamicSqlLoader],
+    sql_defs: list[TableDef],
+    sql_refs: list[TableReference],
+    project_root: Path,
+) -> list[DynamicSqlCrossRef]:
+    """For each loader, find the SQL file it loads, collect mentioned tables,
+    filter to parquet/orc CREATE TABLE defs (which may live in different files)."""
+    sql_files = {d.file.resolve() for d in sql_defs} | {r.sql_file.resolve() for r in sql_refs}
+    defs_by_name: dict[str, TableDef] = {}
+    for d in sql_defs:
+        if d.format in ("parquet", "orc"):
+            defs_by_name[d.table_name.lower()] = d
+
+    out: list[DynamicSqlCrossRef] = []
+    for loader in loaders:
+        resolved_files, match_kind = _resolve_sql_file(loader, sql_files, project_root)
+        if not resolved_files:
+            continue
+        for sql_file in resolved_files:
+            mentioned: set[str] = set()
+            for d in sql_defs:
+                if d.file.resolve() == sql_file:
+                    mentioned.add(d.table_name.lower())
+            for r in sql_refs:
+                if r.sql_file.resolve() == sql_file:
+                    mentioned.add(r.table_name.lower())
+            tables = tuple(defs_by_name[name] for name in mentioned if name in defs_by_name)
+            if not tables:
+                continue
+            out.append(DynamicSqlCrossRef(
+                loader=loader,
+                sql_file=sql_file,
+                tables=tables,
+                match_kind=match_kind,
+            ))
+    return out
+
+
 def format_report(report: Report, *, project_root: Path) -> str:
     if report.total == 0:
         return "No data I/O operations found."
