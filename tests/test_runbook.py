@@ -126,3 +126,22 @@ def test_phase3_has_three_option_blocks(tmp_path):
     phase3 = files[Path("iceberg-runbook/analytics.events/phase3_switchover.sql")]
     assert "OPTION A" in phase3 and "OPTION B" in phase3 and "OPTION C" in phase3
     assert "src/job.py" in phase3
+
+
+def test_phase1_renders_partition_mismatch_warning(tmp_path):
+    entries = [_entry(attrs={"partition_mismatch": "code: identity(region); ddl: identity(date_col)"})]
+    files = serialize_runbook(entries, sql_defs=[], dyn_cross=None, project_root=tmp_path)
+    phase1 = files[Path("iceberg-runbook/analytics.events/phase1_add_files.sql")]
+    assert "PARTITION MISMATCH DETECTED" in phase1
+    assert "code: identity(region); ddl: identity(date_col)" in phase1
+
+
+def test_migration_plan_includes_dyn_cross_note(tmp_path):
+    from types import SimpleNamespace
+    loader = SimpleNamespace(file="src/loader.py", line=42, sql_filename="queries/events.sql")
+    table_ref = SimpleNamespace(table_name="events")
+    cross = SimpleNamespace(loader=loader, tables=[table_ref])
+    files = serialize_runbook([_entry()], sql_defs=[], dyn_cross=[cross], project_root=tmp_path)
+    plan = files[Path("iceberg-runbook/analytics.events/migration-plan.md")]
+    assert "Dynamic SQL loader at src/loader.py:42" in plan
+    assert "queries/events.sql" in plan

@@ -49,16 +49,13 @@ def _match_hive_table(path_arg, sql_defs):
 
 
 def _spec_from_dicts(raw):
-    out = []
-    for entry in raw:
-        if isinstance(entry, PartitionTransform):
-            out.append(entry)
-            continue
-        out.append(PartitionTransform(kind=entry["kind"], column=entry["column"], n=entry.get("n")))
-    return tuple(out)
+    return tuple(
+        PartitionTransform(kind=e["kind"], column=e["column"], n=e.get("n"))
+        for e in raw
+    )
 
 
-def build_table_migrations(entries, sql_defs, dyn_cross=None):
+def build_table_migrations(entries, sql_defs, dyn_cross=None, *, project_root=None):
     groups = {}
     for e in entries:
         if e.resolved_namespace is None or e.resolved_table is None:
@@ -71,14 +68,27 @@ def build_table_migrations(entries, sql_defs, dyn_cross=None):
         write_entries = [e for e in group if e.direction == "write"]
 
         source_path = None
-        for e in (write_entries + group):
+        for e in write_entries:
             if e.path_arg:
                 source_path = e.path_arg
                 break
+        if source_path is None:
+            for e in group:
+                if e.path_arg:
+                    source_path = e.path_arg
+                    break
 
         hive_td = _match_hive_table(source_path, sql_defs)
         source_hive_table = hive_td.table_name if hive_td else None
-        source_sql_file = str(hive_td.file) if hive_td else None
+        if hive_td is None:
+            source_sql_file = None
+        elif project_root is not None:
+            try:
+                source_sql_file = str(hive_td.file.relative_to(project_root))
+            except ValueError:
+                source_sql_file = str(hive_td.file)
+        else:
+            source_sql_file = str(hive_td.file)
         source_sql_line = hive_td.line if hive_td else None
 
         partition_spec = ()
@@ -341,7 +351,7 @@ def _render_phase3(m):
 
 def serialize_runbook(entries, sql_defs, dyn_cross, project_root):
     """Build runbook contents as {relative_path: file_content}. No filesystem writes."""
-    migrations = build_table_migrations(entries, sql_defs, dyn_cross)
+    migrations = build_table_migrations(entries, sql_defs, dyn_cross, project_root=project_root)
     if not migrations:
         return {}
     root = Path("iceberg-runbook")

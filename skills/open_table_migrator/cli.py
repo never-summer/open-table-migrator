@@ -226,7 +226,7 @@ def _print_dry_summary(entries, prepass_plans, build_plans, dyn_cross, runbook_f
         names = ", ".join(p.file.name for p in build_plans)
         print(f"Would update: {names}")
     if runbook_files:
-        n_tables = sum(1 for p in runbook_files if str(p).endswith("migration-plan.md"))
+        n_tables = sum(1 for p in runbook_files if p.name == "migration-plan.md")
         print(f"Would write: iceberg-runbook/ ({len(runbook_files)} files for {n_tables} table(s))")
     print()
 
