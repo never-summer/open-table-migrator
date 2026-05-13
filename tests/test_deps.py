@@ -1,5 +1,11 @@
 from pathlib import Path
-from skills.open_table_migrator.deps import update_dependencies
+from textwrap import dedent
+
+from skills.open_table_migrator.deps import (
+    BuildFileUpdate,
+    plan_dependencies_update,
+    update_dependencies,
+)
 
 
 def test_adds_pyiceberg_to_requirements_txt(tmp_path):
@@ -94,14 +100,6 @@ def test_does_not_duplicate_iceberg_in_gradle(tmp_path):
 ''')
     update_dependencies(tmp_path)
     assert gradle.read_text().count("iceberg-spark-runtime") == 1
-
-
-from pathlib import Path
-from textwrap import dedent
-
-from skills.open_table_migrator.deps import (
-    BuildFileUpdate, plan_dependencies_update,
-)
 
 
 def test_plan_dependencies_update_for_pyproject_without_pyiceberg(tmp_path):

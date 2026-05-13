@@ -16,6 +16,10 @@ Multi-table usage (mapping file):
     --no-deps            skip the build-file updater (pyiceberg /
                          iceberg-spark-runtime). Use when the caller wants to
                          pin a specific version by hand.
+
+    --dry-run            run pipeline without writing to disk; print
+                         worklist JSON + unified diffs to stdout.
+                         Suitable for change-review documentation.
 """
 import argparse
 import sys
@@ -85,7 +89,7 @@ def convert_project(
 
     if dry_run:
         return _run_dry(
-            project_root, matches, sql_defs, resolver,
+            project_root, matches, resolver,
             dyn_cross=dyn_cross,
             update_deps_flag=update_deps,
         )
@@ -170,7 +174,6 @@ def _run_hybrid(
 def _run_dry(
     project_root: Path,
     matches: list,
-    sql_defs: list,
     resolver,
     *,
     dyn_cross: list | None,
@@ -196,6 +199,7 @@ def _run_dry(
 
 def _print_dry_summary(entries, prepass_plans, build_plans, dyn_cross):
     print("--- Summary ---")
+    print(f"Detected {len(entries)} I/O operation(s).")
     print(f"Would write: lakehouse-worklist.json ({len(entries)} entries)")
     if dyn_cross:
         print(f"  with {len(dyn_cross)} dynamic SQL loader cross-references")
