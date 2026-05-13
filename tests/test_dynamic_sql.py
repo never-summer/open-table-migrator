@@ -81,3 +81,68 @@ def test_python_open_identifier_with_const_table(tmp_path):
     assert len(open_loaders) == 1
     assert open_loaders[0].sql_filename == "queries/x.sql"
     assert open_loaders[0].confidence == "medium"
+
+
+def test_java_files_read_all_bytes(tmp_path):
+    (tmp_path / "Job.java").write_text(dedent('''
+        public class Job {
+            void run() throws Exception {
+                byte[] sql = Files.readAllBytes(Path.of("queries/events.sql"));
+            }
+        }
+    '''))
+    loaders = detect_dynamic_sql_loaders(tmp_path)
+    assert len(loaders) == 1
+    assert loaders[0].pattern == "java_files_read"
+    assert loaders[0].sql_filename == "queries/events.sql"
+
+
+def test_java_files_read_string_with_paths_get(tmp_path):
+    (tmp_path / "Job.java").write_text(dedent('''
+        public class Job {
+            void run() throws Exception {
+                String sql = Files.readString(Paths.get("x.sql"));
+            }
+        }
+    '''))
+    loaders = detect_dynamic_sql_loaders(tmp_path)
+    assert len(loaders) == 1
+    assert loaders[0].pattern == "java_files_read"
+    assert loaders[0].sql_filename == "x.sql"
+
+
+def test_java_get_resource_as_stream(tmp_path):
+    (tmp_path / "Job.java").write_text(dedent('''
+        public class Job {
+            void run() {
+                var stream = this.getClass().getResourceAsStream("/sql/events.sql");
+            }
+        }
+    '''))
+    loaders = detect_dynamic_sql_loaders(tmp_path)
+    assert len(loaders) == 1
+    assert loaders[0].pattern == "java_resource_stream"
+    assert loaders[0].sql_filename == "/sql/events.sql"
+
+
+def test_scala_get_resource_as_stream(tmp_path):
+    (tmp_path / "Job.scala").write_text(dedent('''
+        object Job {
+            def run(): Unit = {
+                val stream = getClass.getResourceAsStream("/sql/x.sql")
+            }
+        }
+    '''))
+    loaders = detect_dynamic_sql_loaders(tmp_path)
+    assert len(loaders) == 1
+    assert loaders[0].pattern == "java_resource_stream"
+    assert loaders[0].sql_filename == "/sql/x.sql"
+
+
+def test_loader_in_commented_line_not_detected(tmp_path):
+    (tmp_path / "job.py").write_text(dedent('''
+        # sql = open("queries/x.sql").read()
+        x = 1
+    '''))
+    loaders = detect_dynamic_sql_loaders(tmp_path)
+    assert loaders == []
