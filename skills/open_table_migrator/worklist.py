@@ -21,7 +21,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .analyzer import direction_of
+from .analyzer import direction_of, DynamicSqlCrossRef
 from .detector import PatternMatch
 from .targets import Decision, Resolver
 
@@ -109,10 +109,20 @@ def _hint_for(pattern_type: str, direction: str, decision: Decision) -> str:
     return f"rewrite this {direction} op to target {fqn}"
 
 
+def _rel(p: Path, root: Path) -> str:
+    """Return path relative to root, or str(p) if not under root."""
+    try:
+        return str(p.relative_to(root))
+    except ValueError:
+        return str(p)
+
+
 def build_worklist(
     matches: list[PatternMatch],
     project_root: Path,
     resolver: Resolver,
+    *,
+    dyn_cross: list[DynamicSqlCrossRef] | None = None,
 ) -> list[WorklistEntry]:
     """Build the hybrid-mode worklist from detector matches.
 
@@ -169,13 +179,40 @@ def build_worklist(
     return entries
 
 
-def write_worklist(entries: list[WorklistEntry], project_root: Path) -> Path:
+def write_worklist(
+    entries: list[WorklistEntry],
+    project_root: Path,
+    *,
+    dyn_cross: list[DynamicSqlCrossRef] | None = None,
+) -> Path:
     """Write ``lakehouse-worklist.json`` at project root. Returns the path."""
     out = project_root / "lakehouse-worklist.json"
-    payload = {
+    payload: dict = {
         "version": 1,
         "count": len(entries),
         "entries": [e.to_dict() for e in entries],
     }
+    if dyn_cross:
+        payload["dynamic_sql_loaders"] = [
+            {
+                "file": _rel(c.loader.file, project_root),
+                "line": c.loader.line,
+                "pattern": c.loader.pattern,
+                "sql_filename": c.loader.sql_filename,
+                "confidence": c.loader.confidence,
+                "resolved_to": _rel(c.sql_file, project_root),
+                "match_kind": c.match_kind,
+                "tables": [
+                    {
+                        "name": t.table_name,
+                        "format": t.format,
+                        "ddl_file": _rel(t.file, project_root),
+                        "ddl_line": t.line,
+                    }
+                    for t in c.tables
+                ],
+            }
+            for c in dyn_cross
+        ]
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
     return out

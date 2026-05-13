@@ -22,8 +22,12 @@ import sys
 from pathlib import Path
 
 from .analyzer import cross_reference_sql, dedup_matches, find_ddl_references
+from .analyzer import cross_reference_dynamic_sql
 from .detector import detect_parquet_usage
-from .sql_registry import build_format_map, scan_sql_files
+from .dynamic_sql import detect_dynamic_sql_loaders
+from .sql_registry import build_format_map, scan_sql_files, scan_sql_table_references
+from .scope import build_const_table
+from .ts_parser import language_for_file
 from .deps import update_dependencies
 from .prepass import run_prepass
 from .targets import Mapping, Target, build_resolver, load_mapping
@@ -39,24 +43,42 @@ def convert_project(
     update_deps: bool = True,
 ) -> int:
     matches = detect_parquet_usage(project_root)
-    if not matches:
+
+    # SQL file registry: cross-reference code ops with SQL-defined parquet/orc tables
+    sql_defs = scan_sql_files(project_root)
+
+    # Dynamic SQL loading: detect runtime SQL file loads and cross-reference with table defs
+    def _build_const_for_file(p):
+        lang = language_for_file(p)
+        if lang is None:
+            return None
+        try:
+            return build_const_table(p.read_bytes(), lang, str(p))
+        except Exception:
+            return None
+
+    dyn_loaders = detect_dynamic_sql_loaders(
+        project_root, const_table_for_file=_build_const_for_file,
+    )
+    sql_refs = scan_sql_table_references(project_root)
+    dyn_cross = cross_reference_dynamic_sql(dyn_loaders, sql_defs, sql_refs, project_root)
+
+    if not matches and not dyn_cross:
         print("No Parquet/ORC usage found.")
         return 0
 
-    if mapping is None and not (table_name and namespace):
+    if matches and mapping is None and not (table_name and namespace):
         print("ERROR: provide --table/--namespace, or --mapping, or both.", file=sys.stderr)
         return 2
 
     fallback = Target(namespace=namespace, table=table_name) if (namespace and table_name) else None
     resolver = build_resolver(mapping, fallback, project_root=project_root)
 
-    _run_hybrid(project_root, matches, resolver)
-
-    # SQL file registry: cross-reference code ops with SQL-defined parquet/orc tables
-    sql_defs = scan_sql_files(project_root)
     fmt_map = build_format_map(sql_defs)
     sites = dedup_matches(matches)
     sql_xrefs = cross_reference_sql(sites, fmt_map, sql_defs)
+
+    _run_hybrid(project_root, matches, resolver, dyn_cross=dyn_cross)
 
     updated_deps = update_dependencies(project_root) if update_deps else []
     ddl_refs = find_ddl_references(matches, project_root)
@@ -106,6 +128,8 @@ def _run_hybrid(
     project_root: Path,
     matches,
     resolver,
+    *,
+    dyn_cross=None,
 ) -> None:
     prepass_edits = run_prepass(matches, resolver)
     if prepass_edits:
@@ -116,8 +140,8 @@ def _run_hybrid(
                 rel = f
             print(f"  Pre-pass: {rel} ({count} marker{'s' if count != 1 else ''})")
 
-    entries = build_worklist(matches, project_root, resolver)
-    worklist_path = write_worklist(entries, project_root)
+    entries = build_worklist(matches, project_root, resolver, dyn_cross=dyn_cross)
+    worklist_path = write_worklist(entries, project_root, dyn_cross=dyn_cross)
     rel_worklist = worklist_path.relative_to(project_root)
 
     print(f"\nHybrid mode: {len(entries)} rewrite task(s) in {rel_worklist}")
