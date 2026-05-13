@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .detector import PatternMatch
+from .detector import PatternMatch, PartitionTransform
 from .scope import build_const_table, ConstTable
 from .ts_parser import language_for_file, parse
 
@@ -178,6 +178,122 @@ def _get_args_node(call_node, lang: str):
             if child.type == "argument_list":
                 return child
     return None
+
+
+def _integer_literal_value(node, source: bytes, lang: str) -> int | None:
+    """Return the integer value of a tree-sitter literal node, or None."""
+    if lang == "python" and node.type == "integer":
+        try:
+            return int(source[node.start_byte:node.end_byte].decode())
+        except ValueError:
+            return None
+    if lang == "java" and node.type == "decimal_integer_literal":
+        try:
+            return int(source[node.start_byte:node.end_byte].decode())
+        except ValueError:
+            return None
+    if lang == "scala" and node.type in ("integer_literal", "decimal_integer_literal"):
+        try:
+            return int(source[node.start_byte:node.end_byte].decode())
+        except ValueError:
+            return None
+    return None
+
+
+def _resolve_string_or_const(node, source: bytes, lang: str, const_table) -> str | None:
+    """Resolve an arg node to a string literal value.
+
+    Returns the string for literal args; resolves identifiers via const_table.
+    Returns None for any other shape (splat, function call, list, etc.).
+    """
+    val = _extract_string(node, lang)
+    if val is not None:
+        return val
+    if node.type == "identifier" and const_table is not None:
+        name = source[node.start_byte:node.end_byte].decode()
+        binding = const_table.resolve(name)
+        if binding is not None and binding.value is not None:
+            return binding.value
+    return None
+
+
+def _extract_partition_spec(
+    call_node, source: bytes, lang: str, const_table,
+) -> tuple[PartitionTransform, ...]:
+    """Walk up the method-invocation chain from `call_node`, collect
+    partitionBy / bucketBy transforms.
+
+    Chain order: result preserves the order calls appear in source (top of
+    the chain first). For `df.write.partitionBy("region").bucketBy(8, "uid")
+    .saveAsTable("t")` walked from `saveAsTable` upward, we collect chain
+    nodes [saveAsTable, bucketBy, partitionBy, write] and process them
+    in reverse to emit partitionBy transforms first.
+    """
+    chain: list = []
+    cur = call_node
+    visited: set[int] = set()
+    while cur is not None and id(cur) not in visited:
+        visited.add(id(cur))
+        if cur.type not in ("call", "method_invocation", "call_expression"):
+            break
+        chain.append(cur)
+        # Walk up via the receiver
+        if lang == "python":
+            func = cur.child_by_field_name("function")
+            if func is None or func.type != "attribute":
+                break
+            obj = func.child_by_field_name("object")
+            if obj is None or obj.type != "call":
+                break
+            cur = obj
+        elif lang == "java":
+            obj = cur.child_by_field_name("object")
+            if obj is None or obj.type != "method_invocation":
+                break
+            cur = obj
+        elif lang == "scala":
+            func = cur.child_by_field_name("function")
+            if func is None or func.type != "field_expression":
+                break
+            # Get the receiver of the field_expression (the thing before `.method`)
+            obj = None
+            for child in func.children:
+                if child.type == "call_expression":
+                    obj = child
+                    break
+            if obj is None:
+                break
+            cur = obj
+        else:
+            break
+
+    transforms: list[PartitionTransform] = []
+    for node in reversed(chain):
+        method_name = _get_method_name(node, lang)
+        if method_name == "partitionBy":
+            args = _get_args_node(node, lang)
+            if args is None:
+                continue
+            for arg in args.named_children:
+                col = _resolve_string_or_const(arg, source, lang, const_table)
+                if col is not None:
+                    transforms.append(PartitionTransform(
+                        kind="identity", column=col, n=None,
+                    ))
+        elif method_name == "bucketBy":
+            args = _get_args_node(node, lang)
+            if args is None or args.named_child_count < 2:
+                continue
+            n = _integer_literal_value(args.named_children[0], source, lang)
+            if n is None:
+                continue
+            for arg in args.named_children[1:]:
+                col = _resolve_string_or_const(arg, source, lang, const_table)
+                if col is not None:
+                    transforms.append(PartitionTransform(
+                        kind="bucket", column=col, n=n,
+                    ))
+    return tuple(transforms)
 
 
 def _get_method_name(call_node, lang: str) -> str | None:
@@ -433,6 +549,7 @@ def _detect_python_lib(
     file_path: Path, line: int, end_line: int,
     original_code: str, first_str: str | None,
     attrs: dict[str, str] | None = None,
+    call_node=None, source: bytes = b"", const_table=None,
 ) -> PatternMatch | None:
     """Detect pandas, pyarrow, and stdlib csv patterns (Python only)."""
     _attrs: dict[str, str] = attrs or {}
@@ -451,12 +568,17 @@ def _detect_python_lib(
     if method_name.startswith("to_") and method_name != "to_":
         fmt = method_name[3:]
         if fmt in _PANDAS_WRITE_FORMATS:
+            partition_spec = (
+                _extract_partition_spec(call_node, source, lang, const_table)
+                if call_node is not None else ()
+            )
             return PatternMatch(
                 file=file_path, line=line,
                 pattern_type=f"pandas_write_{fmt}",
                 original_code=original_code,
                 path_arg=first_str, end_line=end_line, format=fmt,
                 attrs=dict(_attrs),
+                partition_spec=partition_spec,
             )
 
     # --- pyarrow: pq.read_table, pq.write_table, pq.ParquetFile, etc. ---
@@ -480,12 +602,17 @@ def _detect_python_lib(
 
     if method_name == "write_table":
         path_arg = _nth_positional_arg_string(args, lang, 1) if args else None
+        partition_spec = (
+            _extract_partition_spec(call_node, source, lang, const_table)
+            if call_node is not None else ()
+        )
         if any(x in obj_text for x in ("pq", "parquet")):
             return PatternMatch(
                 file=file_path, line=line,
                 pattern_type="pyarrow_write_parquet",
                 original_code=original_code,
                 path_arg=path_arg, end_line=end_line, format="parquet",
+                partition_spec=partition_spec,
             )
         if any(x in obj_text for x in ("orc", "po")):
             return PatternMatch(
@@ -493,6 +620,7 @@ def _detect_python_lib(
                 pattern_type="pyarrow_write_orc",
                 original_code=original_code,
                 path_arg=path_arg, end_line=end_line, format="orc",
+                partition_spec=partition_spec,
             )
 
     if method_name in ("ParquetFile", "ParquetDataset"):
@@ -516,21 +644,31 @@ def _detect_python_lib(
 
     if method_name == "write_dataset" and any(x in obj_text for x in ("pa.dataset", "pyarrow.dataset", "dataset")):
         path_arg = _nth_positional_arg_string(args, lang, 1) if args else None
+        partition_spec = (
+            _extract_partition_spec(call_node, source, lang, const_table)
+            if call_node is not None else ()
+        )
         return PatternMatch(
             file=file_path, line=line,
             pattern_type="pyarrow_write_dataset",
             original_code=original_code,
             path_arg=path_arg, end_line=end_line, format="dataset",
+            partition_spec=partition_spec,
         )
 
     # --- stdlib: csv.reader/writer, csv.DictReader/DictWriter ---
     if method_name in ("writer", "DictWriter") and "csv" in obj_text:
+        partition_spec = (
+            _extract_partition_spec(call_node, source, lang, const_table)
+            if call_node is not None else ()
+        )
         return PatternMatch(
             file=file_path, line=line,
             pattern_type="stdlib_write_csv",
             original_code=original_code,
             path_arg=first_str, end_line=end_line, format="csv",
             attrs=dict(_attrs),
+            partition_spec=partition_spec,
         )
     if method_name in ("reader", "DictReader") and "csv" in obj_text:
         return PatternMatch(
@@ -564,6 +702,8 @@ def _detect_spark_chain(
     file_path: Path, line: int, end_line: int,
     original_code: str, first_str: str | None,
     attrs: dict[str, str] | None = None,
+    source: bytes = b"",
+    const_table=None,
 ) -> PatternMatch | None:
     """Detect Spark .read/.write/.readStream/.writeStream chain patterns."""
     _attrs: dict[str, str] = attrs or {}
@@ -573,24 +713,32 @@ def _detect_spark_chain(
 
     if method_name in _SPARK_FORMAT_TERMINALS:
         direction = _spark_chain_direction(chain_kws, method_name)
+        partition_spec: tuple = ()
+        if "write" in direction:
+            partition_spec = _extract_partition_spec(node, source, lang, const_table)
         return PatternMatch(
             file=file_path, line=line,
             pattern_type=f"spark_{direction}_{method_name}",
             original_code=original_code,
             path_arg=first_str, end_line=end_line, format=method_name,
             attrs=dict(_attrs),
+            partition_spec=partition_spec,
         )
 
     if method_name in ("load", "save", "start"):
         fmt = _find_format_in_chain(node, lang)
         if fmt:
             direction = _spark_chain_direction(chain_kws, method_name)
+            partition_spec = ()
+            if "write" in direction:
+                partition_spec = _extract_partition_spec(node, source, lang, const_table)
             return PatternMatch(
                 file=file_path, line=line,
                 pattern_type=f"spark_{direction}_{fmt}",
                 original_code=original_code,
                 path_arg=first_str, end_line=end_line, format=fmt,
                 attrs=dict(_attrs),
+                partition_spec=partition_spec,
             )
 
     return None
@@ -637,6 +785,7 @@ def _detect_calls_in_tree(
                     scope_hint = _enclosing_function_name(node, lang)
                     path_arg, _attrs = _first_arg_or_resolved(args, lang, const_table, scope_hint)
                     top = _top_statement(node)
+                    partition_spec = _extract_partition_spec(node, source_bytes, lang, const_table)
                     matches.append(PatternMatch(
                         file=file_path,
                         line=node.start_point[0] + 1,
@@ -645,6 +794,7 @@ def _detect_calls_in_tree(
                         path_arg=path_arg,
                         end_line=top.end_point[0] + 1,
                         attrs=_attrs,
+                        partition_spec=partition_spec,
                     ))
 
         if node.type != call_type:
@@ -673,6 +823,7 @@ def _detect_calls_in_tree(
                 method_name, obj_text, args, lang,
                 file_path, line, end_line, original_code, first_str,
                 attrs=_attrs,
+                call_node=node, source=source_bytes, const_table=const_table,
             )
             if m:
                 matches.append(m)
@@ -689,12 +840,14 @@ def _detect_calls_in_tree(
             continue
 
         if method_name == "saveAsTable":
+            partition_spec = _extract_partition_spec(node, source_bytes, lang, const_table)
             matches.append(PatternMatch(
                 file=file_path, line=line,
                 pattern_type="hive_save_table",
                 original_code=original_code,
                 path_arg=first_str, end_line=end_line,
                 attrs=_attrs,
+                partition_spec=partition_spec,
             ))
             continue
 
@@ -702,6 +855,7 @@ def _detect_calls_in_tree(
             node, method_name, lang,
             file_path, line, end_line, original_code, first_str,
             attrs=_attrs,
+            source=source_bytes, const_table=const_table,
         )
         if m:
             matches.append(m)

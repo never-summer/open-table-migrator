@@ -21,8 +21,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from .analyzer import cross_reference_sql, dedup_matches, find_ddl_references
-from .analyzer import cross_reference_dynamic_sql
+from .analyzer import (
+    annotate_partition_mismatch,
+    cross_reference_dynamic_sql,
+    cross_reference_sql,
+    dedup_matches,
+    find_ddl_references,
+)
 from .detector import detect_parquet_usage
 from .dynamic_sql import detect_dynamic_sql_loaders
 from .sql_registry import build_format_map, scan_sql_files, scan_sql_table_references
@@ -46,6 +51,9 @@ def convert_project(
 
     # SQL file registry: cross-reference code ops with SQL-defined parquet/orc tables
     sql_defs = scan_sql_files(project_root)
+
+    # Annotate code↔DDL partition_spec divergence on matches BEFORE worklist build
+    annotate_partition_mismatch(matches, sql_defs)
 
     # Dynamic SQL loading: detect runtime SQL file loads and cross-reference with table defs
     def _build_const_for_file(p):

@@ -7,8 +7,10 @@ we know that operation is a migration candidate even though the code itself
 never mentions "parquet".
 """
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from .detector import PartitionTransform
 
 _SQL_EXTS = {".sql", ".hql", ".ddl"}
 
@@ -42,6 +44,12 @@ _CTAS_STORED_AS = re.compile(
 )
 
 
+_PARTITIONED_BY_RX = re.compile(
+    r"\bPARTITIONED\s+BY\s*\(\s*([^)]+)\)",
+    re.IGNORECASE,
+)
+
+
 @dataclass
 class TableDef:
     """A table definition extracted from a SQL file."""
@@ -51,6 +59,30 @@ class TableDef:
     file: Path
     line: int
     snippet: str          # the matched DDL fragment
+    partition_spec: tuple[PartitionTransform, ...] = field(default_factory=tuple)
+
+
+def _parse_partition_clause(content: str, ddl_start: int, ddl_end: int) -> tuple[PartitionTransform, ...]:
+    """Look for PARTITIONED BY (...) inside the substring [ddl_start:ddl_end+window]
+    of content. Returns identity transforms for each column. Types are ignored.
+    """
+    window_end = min(len(content), ddl_end + 2000)
+    window = content[ddl_start:window_end]
+    m = _PARTITIONED_BY_RX.search(window)
+    if not m:
+        return ()
+    cols_text = m.group(1)
+    transforms: list[PartitionTransform] = []
+    for part in cols_text.split(","):
+        part = part.strip().strip("`").strip('"')
+        if not part:
+            continue
+        col_name = part.split()[0].strip("`").strip('"')
+        if col_name:
+            transforms.append(PartitionTransform(
+                kind="identity", column=col_name, n=None,
+            ))
+    return tuple(transforms)
 
 
 def scan_sql_files(project_root: Path) -> list[TableDef]:
@@ -76,6 +108,7 @@ def scan_sql_files(project_root: Path) -> list[TableDef]:
                 # Approximate line number
                 line = content[:m.start()].count("\n") + 1
                 snippet = m.group(0).strip()[:200]
+                partition_spec = _parse_partition_clause(content, m.start(), m.end())
                 defs.append(TableDef(
                     table_name=table,
                     database=db,
@@ -83,6 +116,7 @@ def scan_sql_files(project_root: Path) -> list[TableDef]:
                     file=sql_file,
                     line=line,
                     snippet=snippet,
+                    partition_spec=partition_spec,
                 ))
 
     # Dedup by (table_name, database) — keep the first occurrence

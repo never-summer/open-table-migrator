@@ -98,6 +98,47 @@ def test_format_map_bare_and_qualified():
     assert "none.logs" not in fm
 
 
+def test_hive_partitioned_by_single_column(tmp_path):
+    (tmp_path / "schema.sql").write_text(
+        "CREATE TABLE events (id INT) "
+        "PARTITIONED BY (region STRING) "
+        "STORED AS PARQUET;"
+    )
+    from skills.open_table_migrator.sql_registry import scan_sql_files
+    from skills.open_table_migrator.detector import PartitionTransform
+    defs = scan_sql_files(tmp_path)
+    assert len(defs) == 1
+    assert defs[0].partition_spec == (
+        PartitionTransform(kind="identity", column="region"),
+    )
+
+
+def test_hive_partitioned_by_multiple_columns(tmp_path):
+    (tmp_path / "schema.sql").write_text(
+        "CREATE TABLE events (id INT) "
+        "PARTITIONED BY (region STRING, date_col DATE) "
+        "STORED AS PARQUET;"
+    )
+    from skills.open_table_migrator.sql_registry import scan_sql_files
+    from skills.open_table_migrator.detector import PartitionTransform
+    defs = scan_sql_files(tmp_path)
+    assert len(defs) == 1
+    cols = [t.column for t in defs[0].partition_spec]
+    assert "region" in cols
+    assert "date_col" in cols
+    assert all(t.kind == "identity" for t in defs[0].partition_spec)
+
+
+def test_hive_no_partitioned_by(tmp_path):
+    (tmp_path / "schema.sql").write_text(
+        "CREATE TABLE events (id INT) STORED AS PARQUET;"
+    )
+    from skills.open_table_migrator.sql_registry import scan_sql_files
+    defs = scan_sql_files(tmp_path)
+    assert len(defs) == 1
+    assert defs[0].partition_spec == ()
+
+
 # ─── cross_reference_sql ────────────────────────────────────────────
 
 def test_cross_ref_matches_save_as_table_to_sql_def(tmp_path: Path):

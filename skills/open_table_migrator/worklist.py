@@ -18,7 +18,7 @@ Warn-only entries (streaming, pyarrow dataset API) **do** go into the worklist
 — the agent tries to rewrite them instead of leaving a TODO comment.
 """
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .analyzer import direction_of, DynamicSqlCrossRef
@@ -42,8 +42,20 @@ class WorklistEntry:
     needs_manual_target: bool  # True when decision.unresolved()
     hint: str                  # short instruction for the agent
 
+    # free-form attrs carrying things like partition_mismatch warnings
+    # produced by analyzer.annotate_partition_mismatch.
+    attrs: dict[str, str] = field(default_factory=dict)
+
+    partition_spec: list = field(default_factory=list)
+
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        if not d.get("partition_spec"):
+            d.pop("partition_spec", None)
+        # Omit empty attrs for clean JSON diffs
+        if not d.get("attrs"):
+            d.pop("attrs", None)
+        return d
 
 
 _LANG_BY_SUFFIX = {".py": "python", ".java": "java", ".scala": "scala"}
@@ -160,6 +172,15 @@ def build_worklist(
                 rel = src_file
 
             target = decision.migrate_to
+
+            ps_list = []
+            if direction == "write" and m.partition_spec:
+                for t in m.partition_spec:
+                    d = {"kind": t.kind, "column": t.column}
+                    if t.n is not None:
+                        d["n"] = t.n
+                    ps_list.append(d)
+
             entries.append(WorklistEntry(
                 file=str(rel),
                 start_line=start,
@@ -174,6 +195,8 @@ def build_worklist(
                 resolved_table=target.table if target else None,
                 needs_manual_target=target is None,
                 hint=_hint_for(m.pattern_type, direction, decision),
+                attrs=dict(m.attrs),
+                partition_spec=ps_list,
             ))
 
     return entries
