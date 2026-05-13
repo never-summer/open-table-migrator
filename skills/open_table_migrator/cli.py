@@ -39,6 +39,7 @@ from .scope import build_const_table
 from .ts_parser import language_for_file
 from .deps import update_dependencies
 from .prepass import run_prepass
+from .runbook import write_runbook
 from .targets import Mapping, Target, build_resolver, load_mapping
 from .worklist import build_worklist, write_worklist
 
@@ -99,6 +100,12 @@ def convert_project(
     sql_xrefs = cross_reference_sql(sites, fmt_map, sql_defs)
 
     _run_hybrid(project_root, matches, resolver, dyn_cross=dyn_cross)
+
+    entries_for_runbook = build_worklist(matches, project_root, resolver, dyn_cross=dyn_cross)
+    written_runbook = write_runbook(entries_for_runbook, sql_defs, dyn_cross, project_root)
+    if written_runbook:
+        n_tables = sum(1 for p in written_runbook if p.name == "migration-plan.md")
+        print(f"\nRunbook: iceberg-runbook/ ({len(written_runbook)} files for {n_tables} table(s))")
 
     updated_deps = update_dependencies(project_root) if update_deps else []
     ddl_refs = find_ddl_references(matches, project_root)
@@ -182,22 +189,27 @@ def _run_dry(
     """Render the dry-run preview to stdout. No file I/O for writes."""
     from .deps import plan_dependencies_update
     from .prepass import plan_prepass
+    from .runbook import serialize_runbook
+    from .sql_registry import scan_sql_files
     from .worklist import build_worklist, serialize_worklist
 
-    entries = build_worklist(matches, project_root, resolver)
+    entries = build_worklist(matches, project_root, resolver, dyn_cross=dyn_cross)
     prepass_plans = plan_prepass(matches, resolver)
     build_plans = plan_dependencies_update(project_root) if update_deps_flag else []
     worklist_json = serialize_worklist(entries, project_root=project_root, dyn_cross=dyn_cross)
+    sql_defs = scan_sql_files(project_root)
+    runbook_files = serialize_runbook(entries, sql_defs, dyn_cross, project_root)
 
     print("=== DRY RUN — no files will be modified ===\n")
-    _print_dry_summary(entries, prepass_plans, build_plans, dyn_cross)
+    _print_dry_summary(entries, prepass_plans, build_plans, dyn_cross, runbook_files)
     _print_dry_worklist(worklist_json)
     _print_dry_prepass(prepass_plans)
     _print_dry_build(build_plans)
+    _print_dry_runbook(runbook_files)
     return 0
 
 
-def _print_dry_summary(entries, prepass_plans, build_plans, dyn_cross):
+def _print_dry_summary(entries, prepass_plans, build_plans, dyn_cross, runbook_files):
     print("--- Summary ---")
     print(f"Detected {len(entries)} I/O operation(s).")
     print(f"Would write: lakehouse-worklist.json ({len(entries)} entries)")
@@ -213,6 +225,9 @@ def _print_dry_summary(entries, prepass_plans, build_plans, dyn_cross):
     if build_plans:
         names = ", ".join(p.file.name for p in build_plans)
         print(f"Would update: {names}")
+    if runbook_files:
+        n_tables = sum(1 for p in runbook_files if p.name == "migration-plan.md")
+        print(f"Would write: iceberg-runbook/ ({len(runbook_files)} files for {n_tables} table(s))")
     print()
 
 
@@ -240,6 +255,16 @@ def _print_dry_build(build_plans):
     for plan in build_plans:
         print(f"{plan.file.name}:")
         print(plan.diff)
+
+
+def _print_dry_runbook(runbook_files):
+    if not runbook_files:
+        return
+    print("--- Runbook preview (iceberg-runbook/) ---")
+    for rel_path, content in sorted(runbook_files.items(), key=lambda kv: str(kv[0])):
+        print(f"=== {rel_path} ===")
+        print(content)
+        print()
 
 
 def main() -> None:
