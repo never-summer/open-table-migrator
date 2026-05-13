@@ -391,6 +391,64 @@ df = pd.read_parquet(EVENTS_PATH)   # path_arg = "s3://bucket/events"
 
 When a match resolves a name, `match.attrs["resolved_from"] = "NAME@file:line"` is set so the worklist preserves the original source location. The detector emits the same `path_arg` value regardless of whether it came from a literal at the call site or a resolved binding.
 
+## Partition spec extraction
+
+When a Spark write site uses `.partitionBy(...)` or `.bucketBy(N, ...)`, the detector captures the partition specification structurally and propagates it into the worklist so the migration agent can generate the correct Iceberg `PartitionSpec` per target.
+
+### Supported transforms (MVP)
+
+| Spark API | Iceberg transform |
+|---|---|
+| `.partitionBy("col")` | `identity(col)` |
+| `.partitionBy("col1", "col2", ...)` | one `identity(col)` per arg |
+| `.bucketBy(N, "col1", "col2", ...)` | one `bucket(N, col)` per col arg |
+
+Time-based transforms (`year`/`month`/`day`/`hour`) and `truncate(N, col)` are out of MVP scope — Spark uses these through `withColumn(...)` pre-pass + identity partitioning, which would require intra-method data flow.
+
+### Detection scope
+
+- **Python PySpark** — `df.write.partitionBy/.bucketBy`
+- **JVM Spark** — Java/Scala DataFrame API
+- **Hive DDL in `.sql` files** — `PARTITIONED BY (col1, col2)` (identity transforms only; Hive `PARTITIONED BY` has no `bucket(N)` form)
+
+Constants used as args resolve via the const-folding module (1.1): `REGION = "region"; df.write.partitionBy(REGION)` resolves to `identity(region)`.
+
+### Edge cases
+
+- `partitionBy()` (no args) → no transforms
+- `partitionBy(*cols)` (splat) → skipped silently
+- `partitionBy(year("ts"))` (function call) → skipped silently (out of scope)
+- `bucketBy(N_var, "col")` where N is an identifier → skipped (MVP requires int literal for N)
+- Multiple `partitionBy` calls in one chain → merged in chain order
+
+### Worklist output
+
+Write-direction entries gain an optional `partition_spec` array:
+
+```json
+{
+  "site": "src/jobs/users.py:54",
+  "kind": "write",
+  "target": "analytics.users",
+  "partition_spec": [
+    {"kind": "identity", "column": "region"},
+    {"kind": "bucket", "column": "uid", "n": 8}
+  ]
+}
+```
+
+When no partitions are detected, the field is **omitted** from the JSON (not `[]`).
+
+### Code↔DDL mismatch detection
+
+If both `df.write.partitionBy(...).saveAsTable(t)` (code) and `CREATE TABLE t ... PARTITIONED BY (...)` (DDL in `.sql` file) exist for the same table, the analyzer compares both `partition_spec` values. If they diverge, the match's `attrs["partition_mismatch"]` is populated:
+
+```
+code: identity(region); ddl: identity(date_col)
+```
+
+The agent sees this warning and can flag it before applying the rewrite.
+
 ## Known Limitations
 
 - **FQN propagation on read sites** — after rewriting `saveAsTable("Foo")` → `writeTo("ns.Foo")`, every downstream reference to the bare name (`spark.table("Foo")`, `CACHE TABLE Foo`, `SELECT ... FROM Foo`, `DROP TABLE Foo`) must be updated to the fully-qualified `ns.Foo`. Otherwise those calls resolve through the default session catalog and miss the Iceberg table entirely. The detector reports these reads, but the worklist does not automatically bind them to the write-site rewrite — walk each `spark_read_table` / SparkSQL match in the same file and rename by hand.
