@@ -299,3 +299,64 @@ def test_scala_reassignment_marks_unresolvable():
     assert binding is not None
     assert binding.value is None
     assert binding.reason == "reassigned"
+
+
+def test_scala_triple_quoted_string():
+    src = dedent('''
+        object Job {
+            val PATH = """s3://bucket/x"""
+        }
+    ''').encode()
+    table = build_const_table(src, "scala", "Job.scala")
+    binding = table.resolve("PATH")
+    assert binding is not None
+    assert binding.value == "s3://bucket/x"
+
+
+def test_python_depth_2_chain_does_not_resolve():
+    """Spec: only 1 level of concat indirection. A=B+"x" where B=C+"y"
+    should NOT resolve A — pass 2 reads pass-1 bindings only.
+    """
+    src = dedent('''
+        C = "s3://"
+        B = C + "bucket"
+        A = B + "/events"
+    ''').encode()
+    table = build_const_table(src, "python", "x.py")
+    # B resolves (depth 1: concat of literal + literal)
+    assert table.resolve("B").value == "s3://bucket"
+    # A would be depth 2 — should NOT resolve to "s3://bucket/events"
+    a_binding = table.resolve("A")
+    assert a_binding.value is None
+    assert a_binding.reason == "dependency_unresolved"
+
+
+def test_python_circular_dependency_safe():
+    """Spec: A = B + "x", B = A + "y" must not infinite-loop.
+
+    Both A and B are concats, both seen in pass 2. Neither is in pass-1
+    snapshot, so both end up as dependency_unresolved.
+    """
+    src = dedent('''
+        A = B + "/x"
+        B = A + "/y"
+    ''').encode()
+    table = build_const_table(src, "python", "x.py")
+    a = table.resolve("A")
+    b = table.resolve("B")
+    # Either both None or one is None — neither should resolve successfully
+    assert a is not None and a.value is None
+    assert b is not None and b.value is None
+
+
+def test_python_three_operand_concat_marked_multi_operand():
+    src = dedent('''
+        A = "a"
+        B = "b"
+        PATH = A + B + "/x"
+    ''').encode()
+    table = build_const_table(src, "python", "x.py")
+    binding = table.resolve("PATH")
+    assert binding is not None
+    assert binding.value is None
+    assert binding.reason == "multi_operand_concat"

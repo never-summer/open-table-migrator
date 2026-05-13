@@ -143,6 +143,7 @@ def _python_collector(root, source: bytes, file: str) -> ConstTable:
         _add_or_reassign(scope, name, literal, line, reason=None)
 
     # Pass 2: 1-level concat `+`
+    pass1_snapshot = dict(table.bindings)
     for assign in _python_iter_assignments(root):
         name = _python_assign_target_name(assign, source)
         if name is None:
@@ -168,13 +169,20 @@ def _python_collector(root, source: bytes, file: str) -> ConstTable:
         if left_n is None or right_n is None:
             continue
 
+        # 3+ operand concat detection: nested binary operators
+        if left_n.type == "binary_operator" or right_n.type == "binary_operator":
+            _add_or_reassign(scope, name, value=None, line=line,
+                             reason="multi_operand_concat")
+            continue
+
         def _resolve_operand(operand) -> str | None:
             lit = _python_extract_string_literal(operand, source)
             if lit is not None:
                 return lit
             if operand.type == "identifier":
                 op_name = source[operand.start_byte:operand.end_byte].decode()
-                lookup = table.resolve(op_name, scope_hint=scope)
+                # Look up only in pass-1 snapshot to enforce 1-level depth
+                lookup = pass1_snapshot.get((scope, op_name)) or pass1_snapshot.get(("module", op_name))
                 if lookup is not None and lookup.value is not None:
                     return lookup.value
             return None
@@ -284,6 +292,7 @@ def _java_collector(root, source: bytes, file: str) -> ConstTable:
             _add_or_reassign(scope, name, literal, line, reason=None)
 
     # Pass 2: 1-level concat
+    pass1_snapshot = dict(table.bindings)
     for decl in _java_iter_declarations(root):
         if not _is_eligible(decl):
             continue
@@ -305,13 +314,20 @@ def _java_collector(root, source: bytes, file: str) -> ConstTable:
             if left_n is None or right_n is None:
                 continue
 
+            # 3+ operand concat detection: nested binary operators
+            if left_n.type == "binary_expression" or right_n.type == "binary_expression":
+                _add_or_reassign(scope, name, value=None, line=line,
+                                 reason="multi_operand_concat")
+                continue
+
             def _resolve_operand(operand) -> str | None:
                 lit = _java_extract_string_literal(operand, source)
                 if lit is not None:
                     return lit
                 if operand.type == "identifier":
                     op_name = source[operand.start_byte:operand.end_byte].decode()
-                    lookup = table.resolve(op_name, scope_hint=scope)
+                    # Look up only in pass-1 snapshot to enforce 1-level depth
+                    lookup = pass1_snapshot.get((scope, op_name)) or pass1_snapshot.get(("module", op_name))
                     if lookup is not None and lookup.value is not None:
                         return lookup.value
                 return None
@@ -334,14 +350,14 @@ _COLLECTORS["java"] = _java_collector
 def _scala_extract_string_literal(node, source: bytes) -> str | None:
     """Return the string value of a Scala `string` node, or None.
 
-    Skips interpolated strings (s"...", f"...", raw"...") — those have
-    prefix characters before the quote.
+    Handles both single-quoted (`"..."`) and triple-quoted (`\"\"\"...\"\"\"`)
+    strings. Skips interpolated strings (`s"..."`, `f"..."`, `raw"..."`).
     """
     if node.type != "string":
         return None
     text = source[node.start_byte:node.end_byte].decode()
     if text.startswith('"') and text.endswith('"'):
-        return text[1:-1]
+        return text.strip('"')
     return None
 
 
@@ -423,6 +439,7 @@ def _scala_collector(root, source: bytes, file: str) -> ConstTable:
         _add_or_reassign(scope, name, literal, line, reason=None)
 
     # Pass 2: 1-level concat
+    pass1_snapshot = dict(table.bindings)
     for defn, is_mutable in _scala_iter_val_definitions(root):
         if is_mutable:
             continue
@@ -442,13 +459,20 @@ def _scala_collector(root, source: bytes, file: str) -> ConstTable:
         scope = _scala_scope_key(defn, source)
         line = defn.start_point[0] + 1
 
+        # 3+ operand concat detection: nested binary operators
+        if left_n.type == "infix_expression" or right_n.type == "infix_expression":
+            _add_or_reassign(scope, name, value=None, line=line,
+                             reason="multi_operand_concat")
+            continue
+
         def _resolve_operand(operand) -> str | None:
             lit = _scala_extract_string_literal(operand, source)
             if lit is not None:
                 return lit
             if operand.type == "identifier":
                 op_name = source[operand.start_byte:operand.end_byte].decode()
-                lookup = table.resolve(op_name, scope_hint=scope)
+                # Look up only in pass-1 snapshot to enforce 1-level depth
+                lookup = pass1_snapshot.get((scope, op_name)) or pass1_snapshot.get(("module", op_name))
                 if lookup is not None and lookup.value is not None:
                     return lookup.value
             return None
