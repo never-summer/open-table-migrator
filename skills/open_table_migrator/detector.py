@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -10,7 +10,8 @@ class PatternMatch:
     original_code: str
     path_arg: str | None = None
     end_line: int | None = None  # last physical line of the logical statement
-    format: str | None = None  # NEW
+    format: str | None = None
+    attrs: dict[str, str] = field(default_factory=dict)
 
     @property
     def direction(self) -> str:

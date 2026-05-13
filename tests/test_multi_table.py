@@ -157,6 +157,31 @@ def test_load_mapping_with_skip_and_direction(tmp_path: Path):
     assert m.entries[1].target == Target("ns", "y")
 
 
+def test_mapping_matches_resolved_const_path(tmp_path):
+    """Code uses a name → literal in const_table → mapping glob hits the resolved value."""
+    from skills.open_table_migrator.detector import detect_all_io
+
+    (tmp_path / "job.py").write_text(
+        'import pandas as pd\n'
+        'USERS_PATH = "s3://bucket/users/data.parquet"\n'
+        'df = pd.read_parquet(USERS_PATH)\n'
+    )
+    matches = detect_all_io(tmp_path)
+    pq_matches = [m for m in matches if "parquet" in m.pattern_type]
+    assert len(pq_matches) == 1
+    assert pq_matches[0].path_arg == "s3://bucket/users/data.parquet"
+
+    mapping = Mapping(entries=[
+        MappingEntry(
+            path_glob="s3://bucket/users/*",
+            target=Target(namespace="analytics", table="users"),
+        ),
+    ])
+    resolver = build_resolver(mapping, fallback=None, project_root=tmp_path)
+    decision = resolver(pq_matches[0].path_arg, "read")
+    assert decision.migrate_to == Target(namespace="analytics", table="users")
+
+
 def test_hdfs_mapping_matches_webhdfs_paths_in_code(tmp_path):
     """Mapping uses hdfs://; code uses webhdfs://. Sub-scheme equivalence
     means the entry resolves both."""

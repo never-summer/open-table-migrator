@@ -136,3 +136,97 @@ def test_detects_hive_insert_into(tmp_path):
     ''')
     matches = detect_parquet_usage(tmp_path)
     assert any(m.pattern_type.startswith("hive_insert_") for m in matches)
+
+
+# ─── Const-folding / identifier resolution ────────────────────────────
+
+from textwrap import dedent
+from pathlib import Path
+
+
+def test_python_module_const_resolves_in_read_parquet(tmp_path: Path):
+    (tmp_path / "job.py").write_text(dedent('''
+        import pandas as pd
+        EVENTS_PATH = "s3://bucket/events"
+        df = pd.read_parquet(EVENTS_PATH)
+    '''))
+    from skills.open_table_migrator.detector import detect_all_io
+    matches = detect_all_io(tmp_path)
+    assert len(matches) >= 1
+    pq_match = [m for m in matches if "parquet" in m.pattern_type]
+    assert len(pq_match) == 1
+    m = pq_match[0]
+    assert m.path_arg == "s3://bucket/events"
+    assert "resolved_from" in m.attrs
+    assert "EVENTS_PATH" in m.attrs["resolved_from"]
+
+
+def test_python_function_local_const_resolves(tmp_path: Path):
+    (tmp_path / "job.py").write_text(dedent('''
+        import pandas as pd
+        def run():
+            path = "s3://bucket/users"
+            df = pd.read_parquet(path)
+    '''))
+    from skills.open_table_migrator.detector import detect_all_io
+    matches = detect_all_io(tmp_path)
+    pq_match = [m for m in matches if "parquet" in m.pattern_type]
+    assert len(pq_match) == 1
+    assert pq_match[0].path_arg == "s3://bucket/users"
+
+
+def test_python_reassigned_skipped(tmp_path: Path):
+    (tmp_path / "job.py").write_text(dedent('''
+        import pandas as pd
+        PATH = "s3://a"
+        PATH = "s3://b"
+        df = pd.read_parquet(PATH)
+    '''))
+    from skills.open_table_migrator.detector import detect_all_io
+    matches = detect_all_io(tmp_path)
+    pq_match = [m for m in matches if "parquet" in m.pattern_type]
+    assert len(pq_match) == 1
+    m = pq_match[0]
+    assert m.path_arg is None
+    assert m.attrs.get("skipped_reason") == "reassigned"
+
+
+def test_java_static_final_resolves(tmp_path: Path):
+    (tmp_path / "Job.java").write_text(dedent('''
+        public class Job {
+            private static final String EVENTS = "s3://bucket/events";
+            void run() {
+                spark.read().parquet(EVENTS);
+            }
+        }
+    '''))
+    from skills.open_table_migrator.detector import detect_all_io
+    matches = detect_all_io(tmp_path)
+    assert any(m.path_arg == "s3://bucket/events" for m in matches)
+
+
+def test_scala_val_resolves(tmp_path: Path):
+    (tmp_path / "Job.scala").write_text(dedent('''
+        object Job {
+            val EVENTS = "s3://bucket/events"
+            def run(): Unit = {
+                spark.read.parquet(EVENTS)
+            }
+        }
+    '''))
+    from skills.open_table_migrator.detector import detect_all_io
+    matches = detect_all_io(tmp_path)
+    assert any(m.path_arg == "s3://bucket/events" for m in matches)
+
+
+def test_python_unresolved_identifier_keeps_none(tmp_path: Path):
+    (tmp_path / "job.py").write_text(dedent('''
+        import pandas as pd
+        df = pd.read_parquet(SOME_UNDEFINED_PATH)
+    '''))
+    from skills.open_table_migrator.detector import detect_all_io
+    matches = detect_all_io(tmp_path)
+    pq_match = [m for m in matches if "parquet" in m.pattern_type]
+    assert len(pq_match) == 1
+    assert pq_match[0].path_arg is None
+    assert "skipped_reason" not in pq_match[0].attrs
