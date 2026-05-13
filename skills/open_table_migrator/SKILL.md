@@ -19,6 +19,18 @@ Scans the project for Parquet and ORC operations (Hive DDL, Spark Dataset API, g
 
 Also updates project dependencies (`requirements.txt`, `pyproject.toml`, `pom.xml`, `build.gradle`).
 
+## Project-specific guides
+
+**Before Step 3 (table details) and before Step 6 (table creation), look for these files at the project root and read whichever exist:**
+
+- **`S2T_GUIDE.md`** — source-to-target mapping. Authoritative for table specs, namespace, column metadata (names, types, nullability, descriptions), partition keys, and row-level rules. **If this file exists, prefer it over asking the user for table details in Step 3.** Use it to construct the Iceberg schema in Step 6 instead of inferring from existing Parquet.
+
+- **`ICEBERG_WF_GUIDE.md`** — workflow architecture (Oozie or successor), MoR vs CoW choice, runtime parameters, existing pipeline launches and how the migrated tables plug into them. **Read this before Step 6** to set the right `TBLPROPERTIES` (`write.delete.mode`, `write.update.mode`, `format-version`) and **before the runbook is consumed** to align Phase 2 compaction schedule with existing batch windows.
+
+- **Any other `*_GUIDE.md` at project root** — read it; project owners use this naming convention for migration-relevant context. If a guide contradicts SKILL.md defaults, **the guide wins** (it reflects local constraints).
+
+If none of these files exist, fall back to the interactive Step 3 questions and defaults below.
+
 ## Step-by-Step Process
 
 ### 1. Identify Project Type
