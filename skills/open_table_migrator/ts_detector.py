@@ -840,26 +840,15 @@ def _detect_calls_in_tree(
             continue
 
         if method_name == "saveAsTable":
+            partition_spec = _extract_partition_spec(node, source_bytes, lang, const_table)
             matches.append(PatternMatch(
                 file=file_path, line=line,
                 pattern_type="hive_save_table",
                 original_code=original_code,
                 path_arg=first_str, end_line=end_line,
                 attrs=_attrs,
+                partition_spec=partition_spec,
             ))
-            # Also emit a write-direction pattern when the chain includes `.write.`,
-            # so that partition_spec is accessible via the "write" pattern filter.
-            chain_kws = _find_chain_keywords(node)
-            if "write" in chain_kws or "writeStream" in chain_kws:
-                partition_spec = _extract_partition_spec(node, source_bytes, lang, const_table)
-                matches.append(PatternMatch(
-                    file=file_path, line=line,
-                    pattern_type="spark_write_table",
-                    original_code=original_code,
-                    path_arg=first_str, end_line=end_line, format="table",
-                    attrs=dict(_attrs),
-                    partition_spec=partition_spec,
-                ))
             continue
 
         m = _detect_spark_chain(
