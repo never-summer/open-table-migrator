@@ -79,12 +79,27 @@ def _detect_python_loaders(source: bytes, src_path: Path, const_table) -> list[D
     while stack:
         node = stack.pop()
         if node.type == "call":
-            loader = _try_py_open(node, source, src_path, const_table)
-            if loader is not None:
-                out.append(loader)
+            for attempt in (_try_py_open, _try_py_path_read_text, _try_py_pkgutil_get_data):
+                loader = attempt(node, source, src_path, const_table)
+                if loader is not None:
+                    out.append(loader)
+                    break
         for child in reversed(node.children):
             stack.append(child)
     return out
+
+
+def _resolve_string_or_identifier_python(node, source: bytes, const_table) -> tuple[str | None, str]:
+    """Return (value, confidence). confidence in {"high", "medium", "skip"}."""
+    literal = _extract_string_literal_python(node, source)
+    if literal is not None:
+        return literal, "high"
+    if node.type == "identifier" and const_table is not None:
+        name = source[node.start_byte:node.end_byte].decode()
+        binding = const_table.resolve(name)
+        if binding is not None and binding.value is not None:
+            return binding.value, "medium"
+    return None, "skip"
 
 
 def _try_py_open(call_node, source: bytes, src_path: Path, const_table):
@@ -97,17 +112,82 @@ def _try_py_open(call_node, source: bytes, src_path: Path, const_table):
     args = call_node.child_by_field_name("arguments")
     if args is None or args.named_child_count < 1:
         return None
-    first_arg = args.named_children[0]
-    filename = _extract_string_literal_python(first_arg, source)
-    if filename is None:
-        # Identifier — placeholder for Task 2 (const_table integration)
-        return None
-    if not _filename_is_sql(filename):
+    filename, confidence = _resolve_string_or_identifier_python(
+        args.named_children[0], source, const_table,
+    )
+    if filename is None or not _filename_is_sql(filename):
         return None
     return DynamicSqlLoader(
         file=src_path,
         line=call_node.start_point[0] + 1,
         pattern="py_open",
         sql_filename=filename,
-        confidence="high",
+        confidence=confidence,
+    )
+
+
+def _try_py_path_read_text(call_node, source: bytes, src_path: Path, const_table):
+    func = call_node.child_by_field_name("function")
+    if func is None or func.type != "attribute":
+        return None
+    method_name_node = func.child_by_field_name("attribute")
+    if method_name_node is None:
+        return None
+    method_name = source[method_name_node.start_byte:method_name_node.end_byte].decode()
+    if method_name not in ("read_text", "read_bytes"):
+        return None
+    obj = func.child_by_field_name("object")
+    if obj is None or obj.type != "call":
+        return None
+    inner_func = obj.child_by_field_name("function")
+    if inner_func is None or inner_func.type != "identifier":
+        return None
+    if source[inner_func.start_byte:inner_func.end_byte].decode() != "Path":
+        return None
+    inner_args = obj.child_by_field_name("arguments")
+    if inner_args is None or inner_args.named_child_count < 1:
+        return None
+    filename, confidence = _resolve_string_or_identifier_python(
+        inner_args.named_children[0], source, const_table,
+    )
+    if filename is None or not _filename_is_sql(filename):
+        return None
+    return DynamicSqlLoader(
+        file=src_path,
+        line=call_node.start_point[0] + 1,
+        pattern="py_path_read_text",
+        sql_filename=filename,
+        confidence=confidence,
+    )
+
+
+def _try_py_pkgutil_get_data(call_node, source: bytes, src_path: Path, const_table):
+    func = call_node.child_by_field_name("function")
+    if func is None or func.type != "attribute":
+        return None
+    method_name_node = func.child_by_field_name("attribute")
+    if method_name_node is None:
+        return None
+    if source[method_name_node.start_byte:method_name_node.end_byte].decode() != "get_data":
+        return None
+    obj = func.child_by_field_name("object")
+    if obj is None or obj.type != "identifier":
+        return None
+    if source[obj.start_byte:obj.end_byte].decode() != "pkgutil":
+        return None
+    args = call_node.child_by_field_name("arguments")
+    if args is None or args.named_child_count < 2:
+        return None
+    second_arg = args.named_children[1]
+    filename, confidence = _resolve_string_or_identifier_python(
+        second_arg, source, const_table,
+    )
+    if filename is None or not _filename_is_sql(filename):
+        return None
+    return DynamicSqlLoader(
+        file=src_path,
+        line=call_node.start_point[0] + 1,
+        pattern="py_pkgutil_get_data",
+        sql_filename=filename,
+        confidence=confidence,
     )
