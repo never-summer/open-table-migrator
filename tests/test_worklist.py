@@ -41,6 +41,69 @@ def test_write_entry_without_partition_omits_field(tmp_path):
     assert "partition_spec" not in blob
 
 
+def test_serialize_worklist_returns_valid_json_no_disk_write(tmp_path):
+    """serialize_worklist produces the JSON string without writing to disk."""
+    import json
+    from skills.open_table_migrator.targets import Target, constant_resolver
+    from skills.open_table_migrator.worklist import (
+        build_worklist, serialize_worklist,
+    )
+    from skills.open_table_migrator.detector import detect_all_io
+
+    (tmp_path / "job.py").write_text(
+        'import pandas as pd\n'
+        'df = pd.read_parquet("s3://bucket/x.parquet")\n'
+    )
+    matches = detect_all_io(tmp_path)
+    resolver = constant_resolver(Target(namespace="ns", table="t"))
+    entries = build_worklist(matches, tmp_path, resolver)
+
+    json_str = serialize_worklist(entries, project_root=tmp_path)
+
+    # No worklist file on disk
+    assert not (tmp_path / "lakehouse-worklist.json").exists()
+    # JSON is valid and matches version
+    blob = json.loads(json_str)
+    assert blob["version"] == 1
+    assert blob["count"] == len(entries)
+    assert "entries" in blob
+
+
+def test_serialize_worklist_with_dyn_cross_includes_loaders_key(tmp_path):
+    """serialize_worklist with dyn_cross adds dynamic_sql_loaders key."""
+    import json
+    from skills.open_table_migrator.targets import Target, constant_resolver
+    from skills.open_table_migrator.worklist import (
+        build_worklist, serialize_worklist,
+    )
+    from skills.open_table_migrator.detector import detect_all_io
+    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.sql_registry import (
+        scan_sql_files, scan_sql_table_references,
+    )
+    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
+
+    (tmp_path / "queries").mkdir()
+    (tmp_path / "queries" / "events.sql").write_text(
+        "CREATE TABLE events (id INT) STORED AS PARQUET;"
+    )
+    (tmp_path / "job.py").write_text(
+        'sql = open("queries/events.sql").read()\n'
+    )
+    matches = detect_all_io(tmp_path)
+    resolver = constant_resolver(Target(namespace="ns", table="t"))
+    entries = build_worklist(matches, tmp_path, resolver)
+    loaders = detect_dynamic_sql_loaders(tmp_path)
+    defs = scan_sql_files(tmp_path)
+    refs = scan_sql_table_references(tmp_path)
+    dyn_cross = cross_reference_dynamic_sql(loaders, defs, refs, tmp_path)
+
+    json_str = serialize_worklist(entries, project_root=tmp_path, dyn_cross=dyn_cross)
+    blob = json.loads(json_str)
+    assert "dynamic_sql_loaders" in blob
+    assert len(blob["dynamic_sql_loaders"]) >= 1
+
+
 def test_worklist_entry_carries_partition_mismatch_attr(tmp_path):
     """When code and DDL disagree on partitions, the worklist JSON must carry
     the partition_mismatch warning in attrs (it's mutated onto matches by

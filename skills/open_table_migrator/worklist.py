@@ -202,6 +202,48 @@ def build_worklist(
     return entries
 
 
+def _dyn_cross_to_dict(c: DynamicSqlCrossRef, project_root: Path) -> dict:
+    """Serialize a single DynamicSqlCrossRef to a dict."""
+    resolved_root = project_root.resolve()
+    return {
+        "file": _rel(c.loader.file.resolve(), resolved_root),
+        "line": c.loader.line,
+        "pattern": c.loader.pattern,
+        "sql_filename": c.loader.sql_filename,
+        "confidence": c.loader.confidence,
+        "resolved_to": _rel(c.sql_file, resolved_root),
+        "match_kind": c.match_kind,
+        "tables": [
+            {
+                "name": t.table_name,
+                "format": t.format,
+                "ddl_file": _rel(t.file.resolve(), resolved_root),
+                "ddl_line": t.line,
+            }
+            for t in c.tables
+        ],
+    }
+
+
+def serialize_worklist(
+    entries: list[WorklistEntry],
+    project_root: Path,
+    *,
+    dyn_cross: list[DynamicSqlCrossRef] | None = None,
+) -> str:
+    """Build the lakehouse-worklist.json content string. No filesystem writes."""
+    payload: dict = {
+        "version": 1,
+        "count": len(entries),
+        "entries": [e.to_dict() for e in entries],
+    }
+    if dyn_cross:
+        payload["dynamic_sql_loaders"] = [
+            _dyn_cross_to_dict(c, project_root) for c in dyn_cross
+        ]
+    return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+
+
 def write_worklist(
     entries: list[WorklistEntry],
     project_root: Path,
@@ -210,33 +252,5 @@ def write_worklist(
 ) -> Path:
     """Write ``lakehouse-worklist.json`` at project root. Returns the path."""
     out = project_root / "lakehouse-worklist.json"
-    payload: dict = {
-        "version": 1,
-        "count": len(entries),
-        "entries": [e.to_dict() for e in entries],
-    }
-    if dyn_cross:
-        resolved_root = project_root.resolve()
-        payload["dynamic_sql_loaders"] = [
-            {
-                "file": _rel(c.loader.file.resolve(), resolved_root),
-                "line": c.loader.line,
-                "pattern": c.loader.pattern,
-                "sql_filename": c.loader.sql_filename,
-                "confidence": c.loader.confidence,
-                "resolved_to": _rel(c.sql_file, resolved_root),
-                "match_kind": c.match_kind,
-                "tables": [
-                    {
-                        "name": t.table_name,
-                        "format": t.format,
-                        "ddl_file": _rel(t.file.resolve(), resolved_root),
-                        "ddl_line": t.line,
-                    }
-                    for t in c.tables
-                ],
-            }
-            for c in dyn_cross
-        ]
-    out.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    out.write_text(serialize_worklist(entries, project_root, dyn_cross=dyn_cross))
     return out

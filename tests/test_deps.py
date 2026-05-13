@@ -1,5 +1,11 @@
 from pathlib import Path
-from skills.open_table_migrator.deps import update_dependencies
+from textwrap import dedent
+
+from skills.open_table_migrator.deps import (
+    BuildFileUpdate,
+    plan_dependencies_update,
+    update_dependencies,
+)
 
 
 def test_adds_pyiceberg_to_requirements_txt(tmp_path):
@@ -94,3 +100,45 @@ def test_does_not_duplicate_iceberg_in_gradle(tmp_path):
 ''')
     update_dependencies(tmp_path)
     assert gradle.read_text().count("iceberg-spark-runtime") == 1
+
+
+def test_plan_dependencies_update_for_pyproject_without_pyiceberg(tmp_path):
+    """plan_dependencies_update returns a BuildFileUpdate that adds pyiceberg
+    to pyproject.toml. File on disk MUST NOT be changed."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(dedent('''
+        [project]
+        name = "x"
+        version = "0.1.0"
+        dependencies = [
+          "pandas>=2.0.0",
+        ]
+    '''))
+    original_content = pyproject.read_text()
+
+    plans = plan_dependencies_update(tmp_path)
+
+    # File on disk unchanged
+    assert pyproject.read_text() == original_content
+    # Plan reflects added dependency
+    assert len(plans) == 1
+    plan = plans[0]
+    assert plan.file == pyproject
+    assert plan.original == original_content
+    assert "pyiceberg" in plan.modified
+
+
+def test_plan_dependencies_update_for_already_updated_pyproject(tmp_path):
+    """If pyiceberg is already present, plan is empty (idempotent)."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(dedent('''
+        [project]
+        name = "x"
+        dependencies = [
+          "pandas>=2.0.0",
+          "pyiceberg[sql-sqlite]>=0.7.0",
+        ]
+    '''))
+
+    plans = plan_dependencies_update(tmp_path)
+    assert plans == []

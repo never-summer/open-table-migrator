@@ -512,6 +512,44 @@ Each cross-reference appears in `lakehouse-worklist.json` under `dynamic_sql_loa
 - ORM-generated SQL (SQLAlchemy `select(...)`, jOOQ DSL) is not detected.
 - Dynamic table names within SQL (`INSERT INTO {schema}.events`) are not resolved.
 
+## Dry run
+
+The `--dry-run` flag runs the full migration pipeline (detection, cross-reference, worklist building, prepass planning, dependency-update planning) but writes **nothing** to disk. Output is printed to stdout in four sections, suitable for change-review documentation.
+
+### Usage
+
+```bash
+PYTHONPATH=. python3 -m skills.open_table_migrator.cli <project_path> \
+    --table users --namespace analytics --dry-run
+```
+
+### What is suppressed
+
+- `lakehouse-worklist.json` is not written.
+- Source files (`.py`/`.java`/`.scala`) are not modified (skip-markers, pyspark conf comments).
+- Build files (`pyproject.toml`, `pom.xml`, `build.gradle[.kts]`, `build.sbt`, `requirements.txt`) are not modified.
+
+### Output sections
+
+1. **Summary** — counts: entries that would go in the worklist, files that would be prepass'd, build files that would be updated.
+2. **Worklist preview** — the full `lakehouse-worklist.json` content that would be written, printed to stdout as JSON.
+3. **Prepass diff preview** — unified diff of skip-markers and pyspark conf comments that would be added to source files, per file.
+4. **Build-file updates** — unified diff of the pyiceberg / iceberg-spark-runtime dependency additions to each build file.
+
+Sections without content are omitted (e.g., no prepass section if nothing would be touched).
+
+### Composition with other flags
+
+- `--dry-run --no-deps` — valid; `--no-deps` is redundant.
+- `--dry-run --mapping foo.json` — valid; mapping is read normally.
+- `--dry-run --table X --namespace Y` — valid.
+
+Validation rules (e.g., requiring `--table` with `--namespace`) still apply in dry-run mode.
+
+### Exit code
+
+Always 0 on successful dry-run. Pre-existing argument-validation errors still return exit code 2.
+
 ## Known Limitations
 
 - **FQN propagation on read sites** — after rewriting `saveAsTable("Foo")` → `writeTo("ns.Foo")`, every downstream reference to the bare name (`spark.table("Foo")`, `CACHE TABLE Foo`, `SELECT ... FROM Foo`, `DROP TABLE Foo`) must be updated to the fully-qualified `ns.Foo`. Otherwise those calls resolve through the default session catalog and miss the Iceberg table entirely. The detector reports these reads, but the worklist does not automatically bind them to the write-site rewrite — walk each `spark_read_table` / SparkSQL match in the same file and rename by hand.
