@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from .detector import PatternMatch
+from .detector import PatternMatch, PartitionTransform
 
 
 _OLD_READ_TYPES = {
@@ -451,3 +451,52 @@ def format_report(report: Report, *, project_root: Path) -> str:
             lines.append(f"    {m.pattern_type:28s} ({direction_of(m.pattern_type)}) line {m.line}:{m.line}")
             lines.append(f"      {m.original_code}")
     return "\n".join(lines)
+
+
+def _format_transforms(transforms: tuple[PartitionTransform, ...]) -> str:
+    """Render a transform tuple as a stable readable string."""
+    parts = []
+    for t in transforms:
+        if t.kind == "identity":
+            parts.append(f"identity({t.column})")
+        elif t.kind == "bucket":
+            parts.append(f"bucket({t.n}, {t.column})")
+    return ", ".join(parts) if parts else "none"
+
+
+def annotate_partition_mismatch(
+    matches: list,            # list[PatternMatch] — typed loose to avoid forward-ref dance
+    sql_defs: list,           # list[TableDef]
+) -> None:
+    """Compare each write-direction match's partition_spec with the SQL
+    registry's partition_spec for the same table name. When they differ,
+    populate match.attrs['partition_mismatch'] with a description.
+
+    Operates in-place on the matches list. Skips matches where both sides
+    have empty partition_spec.
+    """
+    defs_by_name = {}
+    for d in sql_defs:
+        defs_by_name[d.table_name.lower()] = d
+        if d.database:
+            defs_by_name[f"{d.database.lower()}.{d.table_name.lower()}"] = d
+
+    for m in matches:
+        if direction_of(m.pattern_type) != "write":
+            continue
+        if not m.path_arg:
+            continue
+        key = m.path_arg.strip("`").lower()
+        d = defs_by_name.get(key)
+        if d is None and "." in key:
+            d = defs_by_name.get(key.rsplit(".", 1)[-1])
+        if d is None:
+            continue
+        if not m.partition_spec and not d.partition_spec:
+            continue
+        if set(m.partition_spec) == set(d.partition_spec):
+            continue
+        m.attrs["partition_mismatch"] = (
+            f"code: {_format_transforms(m.partition_spec)}; "
+            f"ddl: {_format_transforms(d.partition_spec)}"
+        )

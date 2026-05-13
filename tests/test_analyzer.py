@@ -97,3 +97,46 @@ def test_is_migration_candidate_new_taxonomy():
     assert is_migration_candidate("pandas_write_json") is False
     assert is_migration_candidate("hive_create_parquet") is True
     assert is_migration_candidate("hive_create_orc") is True
+
+
+def test_partition_mismatch_when_code_and_ddl_differ(tmp_path):
+    """Code partitions by region, DDL partitions by date → mismatch flagged."""
+    (tmp_path / "schema.sql").write_text(
+        "CREATE TABLE events (id INT) PARTITIONED BY (date_col STRING) STORED AS PARQUET;"
+    )
+    (tmp_path / "job.py").write_text(
+        'df.write.partitionBy("region").saveAsTable("events")\n'
+    )
+    from skills.open_table_migrator.detector import detect_all_io
+    from skills.open_table_migrator.sql_registry import scan_sql_files
+    from skills.open_table_migrator.analyzer import annotate_partition_mismatch
+
+    matches = detect_all_io(tmp_path)
+    defs = scan_sql_files(tmp_path)
+    annotate_partition_mismatch(matches, defs)
+    write_matches = [m for m in matches if m.direction == "write"]
+    assert len(write_matches) >= 1
+    flagged = [m for m in write_matches if "partition_mismatch" in m.attrs]
+    assert len(flagged) >= 1
+    msg = flagged[0].attrs["partition_mismatch"]
+    assert "region" in msg
+    assert "date_col" in msg
+
+
+def test_no_partition_mismatch_when_code_and_ddl_agree(tmp_path):
+    (tmp_path / "schema.sql").write_text(
+        "CREATE TABLE events (id INT) PARTITIONED BY (region STRING) STORED AS PARQUET;"
+    )
+    (tmp_path / "job.py").write_text(
+        'df.write.partitionBy("region").saveAsTable("events")\n'
+    )
+    from skills.open_table_migrator.detector import detect_all_io
+    from skills.open_table_migrator.sql_registry import scan_sql_files
+    from skills.open_table_migrator.analyzer import annotate_partition_mismatch
+
+    matches = detect_all_io(tmp_path)
+    defs = scan_sql_files(tmp_path)
+    annotate_partition_mismatch(matches, defs)
+    write_matches = [m for m in matches if m.direction == "write"]
+    for m in write_matches:
+        assert "partition_mismatch" not in m.attrs

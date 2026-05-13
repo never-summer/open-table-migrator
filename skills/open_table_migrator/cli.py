@@ -21,7 +21,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .analyzer import cross_reference_sql, dedup_matches, find_ddl_references
+from .analyzer import annotate_partition_mismatch, cross_reference_sql, dedup_matches, find_ddl_references
 from .detector import detect_parquet_usage
 from .sql_registry import build_format_map, scan_sql_files
 from .deps import update_dependencies
@@ -54,6 +54,7 @@ def convert_project(
 
     # SQL file registry: cross-reference code ops with SQL-defined parquet/orc tables
     sql_defs = scan_sql_files(project_root)
+    annotate_partition_mismatch(matches, sql_defs)
     fmt_map = build_format_map(sql_defs)
     sites = dedup_matches(matches)
     sql_xrefs = cross_reference_sql(sites, fmt_map, sql_defs)
