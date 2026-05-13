@@ -46,6 +46,7 @@ def convert_project(
     namespace: str | None = None,
     mapping: Mapping | None = None,
     update_deps: bool = True,
+    dry_run: bool = False,
 ) -> int:
     matches = detect_parquet_usage(project_root)
 
@@ -81,6 +82,13 @@ def convert_project(
 
     fallback = Target(namespace=namespace, table=table_name) if (namespace and table_name) else None
     resolver = build_resolver(mapping, fallback, project_root=project_root)
+
+    if dry_run:
+        return _run_dry(
+            project_root, matches, sql_defs, resolver,
+            dyn_cross=dyn_cross,
+            update_deps_flag=update_deps,
+        )
 
     fmt_map = build_format_map(sql_defs)
     sites = dedup_matches(matches)
@@ -159,6 +167,77 @@ def _run_hybrid(
             print(f"  {unresolved} entry(s) need a manual target — fix mapping or rewrite by hand.")
 
 
+def _run_dry(
+    project_root: Path,
+    matches: list,
+    sql_defs: list,
+    resolver,
+    *,
+    dyn_cross: list | None,
+    update_deps_flag: bool,
+) -> int:
+    """Render the dry-run preview to stdout. No file I/O for writes."""
+    from .deps import plan_dependencies_update
+    from .prepass import plan_prepass
+    from .worklist import build_worklist, serialize_worklist
+
+    entries = build_worklist(matches, project_root, resolver)
+    prepass_plans = plan_prepass(matches, resolver)
+    build_plans = plan_dependencies_update(project_root) if update_deps_flag else []
+    worklist_json = serialize_worklist(entries, project_root=project_root, dyn_cross=dyn_cross)
+
+    print("=== DRY RUN — no files will be modified ===\n")
+    _print_dry_summary(entries, prepass_plans, build_plans, dyn_cross)
+    _print_dry_worklist(worklist_json)
+    _print_dry_prepass(prepass_plans)
+    _print_dry_build(build_plans)
+    return 0
+
+
+def _print_dry_summary(entries, prepass_plans, build_plans, dyn_cross):
+    print("--- Summary ---")
+    print(f"Would write: lakehouse-worklist.json ({len(entries)} entries)")
+    if dyn_cross:
+        print(f"  with {len(dyn_cross)} dynamic SQL loader cross-references")
+    total_markers = sum(p.marker_count for p in prepass_plans)
+    pyspark_files = sum(1 for p in prepass_plans if p.pyspark_conf_added)
+    if prepass_plans:
+        msg = f"Would prepass: {len(prepass_plans)} file(s) with {total_markers} marker(s)"
+        if pyspark_files:
+            msg += f", pyspark conf added in {pyspark_files} file(s)"
+        print(msg)
+    if build_plans:
+        names = ", ".join(p.file.name for p in build_plans)
+        print(f"Would update: {names}")
+    print()
+
+
+def _print_dry_worklist(worklist_json: str):
+    print("--- Worklist preview (lakehouse-worklist.json) ---")
+    print(worklist_json)
+
+
+def _print_dry_prepass(prepass_plans):
+    if not prepass_plans:
+        return
+    print("--- Prepass diff preview ---")
+    for plan in prepass_plans:
+        label = f"{plan.marker_count} marker(s)"
+        if plan.pyspark_conf_added:
+            label += ", pyspark conf"
+        print(f"=== {plan.file} ({label}) ===")
+        print(plan.diff)
+
+
+def _print_dry_build(build_plans):
+    if not build_plans:
+        return
+    print("--- Build-file updates ---")
+    for plan in build_plans:
+        print(f"{plan.file.name}:")
+        print(plan.diff)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert Parquet/ORC usage to Apache Iceberg")
     parser.add_argument("project", type=Path, help="Path to project root")
@@ -169,6 +248,11 @@ def main() -> None:
         "--no-deps",
         action="store_true",
         help="skip automatic build-file updates (useful when pinning a specific version by hand)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="run pipeline without writing to disk; print worklist JSON + unified diffs to stdout",
     )
     args = parser.parse_args()
 
@@ -182,6 +266,7 @@ def main() -> None:
         namespace=ns,
         mapping=mapping,
         update_deps=not args.no_deps,
+        dry_run=args.dry_run,
     ))
 
 
