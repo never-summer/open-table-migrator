@@ -446,6 +446,72 @@ code: identity(region); ddl: identity(date_col)
 
 The agent sees this warning and can flag it before applying the rewrite.
 
+## Dynamic SQL loading
+
+The detector finds call-sites that load `.sql` files at runtime and cross-references them with parquet/orc tables defined in those (or related) files. This catches the common pattern where SQL is stored separately from code:
+
+```python
+sql = open("queries/events_update.sql").read()
+spark.sql(sql)
+```
+
+### Detected patterns
+
+| Language | Pattern | Example |
+|---|---|---|
+| Python | `py_open` | `open("x.sql")` |
+| Python | `py_path_read_text` | `Path("x.sql").read_text()` |
+| Python | `py_pkgutil_get_data` | `pkgutil.get_data(__name__, "x.sql")` |
+| Java | `java_files_read` | `Files.readAllBytes(Path.of("x.sql"))` |
+| Java/Scala | `java_resource_stream` | `getClass().getResourceAsStream("/sql/x.sql")` |
+
+### What's parsed in the loaded SQL
+
+Beyond `CREATE TABLE ... STORED AS PARQUET` (already handled), the SQL registry now also extracts non-DDL references:
+
+- `INSERT INTO <table>` and `INSERT OVERWRITE TABLE <table>` → write reference
+- `UPDATE <table> SET ...` → write reference
+- `MERGE INTO <table>` → write reference
+- `FROM <table>` / `JOIN <table>` → read reference
+
+CTE names introduced by `WITH <name> AS (...)` are skipped from `FROM`/`JOIN` references.
+
+### Cross-reference behavior
+
+For each loader, the loader's `sql_filename` is resolved against the project tree in three steps:
+
+1. Path relative to the loader's containing file's directory.
+2. Path relative to project root.
+3. Basename match across all registered `.sql` files (with `match_kind="basename_unique"` or `"basename_ambiguous"`).
+
+Tables mentioned in the resolved SQL file (via CREATE / INSERT / FROM / JOIN / etc.) are joined against the registry of parquet/orc `CREATE TABLE` definitions across all `.sql` files. This handles the common pattern of `schema.sql` (with CREATE) and `queries/*.sql` (with INSERT only).
+
+### Worklist output
+
+Each cross-reference appears in `lakehouse-worklist.json` under `dynamic_sql_loaders`:
+
+```json
+{
+  "file": "src/jobs/events.py",
+  "line": 42,
+  "pattern": "py_open",
+  "sql_filename": "queries/events_update.sql",
+  "confidence": "high",
+  "resolved_to": "queries/events_update.sql",
+  "match_kind": "exact_path",
+  "tables": [
+    {"name": "events", "format": "parquet", "ddl_file": "schema.sql", "ddl_line": 8}
+  ]
+}
+```
+
+### Limitations
+
+- SQL templating (Jinja, `.format`, `${...}`) is not parsed.
+- In-SQL `\i` / `SOURCE` / `!include` directives are not followed.
+- ORM-generated SQL (SQLAlchemy `select(...)`, jOOQ DSL) is not detected.
+- Dynamic table names within SQL (`INSERT INTO {schema}.events`) are not resolved.
+
 ## Known Limitations
 
 - **FQN propagation on read sites** — after rewriting `saveAsTable("Foo")` → `writeTo("ns.Foo")`, every downstream reference to the bare name (`spark.table("Foo")`, `CACHE TABLE Foo`, `SELECT ... FROM Foo`, `DROP TABLE Foo`) must be updated to the fully-qualified `ns.Foo`. Otherwise those calls resolve through the default session catalog and miss the Iceberg table entirely. The detector reports these reads, but the worklist does not automatically bind them to the write-site rewrite — walk each `spark_read_table` / SparkSQL match in the same file and rename by hand.

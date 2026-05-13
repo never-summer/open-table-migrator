@@ -233,3 +233,77 @@ def test_cross_ref_no_match_when_table_not_parquet(tmp_path: Path):
     xrefs = cross_reference_sql(sites, fmt_map, sql_defs)
 
     assert len(xrefs) == 0
+
+
+def test_insert_into_emits_write_reference(tmp_path):
+    (tmp_path / "x.sql").write_text("INSERT INTO events SELECT * FROM staging;")
+    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    refs = scan_sql_table_references(tmp_path)
+    write_refs = [r for r in refs if r.role == "write"]
+    assert any(r.table_name == "events" for r in write_refs)
+
+
+def test_insert_overwrite_emits_write_reference(tmp_path):
+    (tmp_path / "x.sql").write_text("INSERT OVERWRITE TABLE events SELECT 1;")
+    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    refs = scan_sql_table_references(tmp_path)
+    assert any(r.table_name == "events" and r.role == "write" for r in refs)
+
+
+def test_select_from_emits_read_reference(tmp_path):
+    (tmp_path / "x.sql").write_text("SELECT * FROM events WHERE active = true;")
+    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    refs = scan_sql_table_references(tmp_path)
+    assert any(r.table_name == "events" and r.role == "read" for r in refs)
+
+
+def test_join_emits_read_reference(tmp_path):
+    (tmp_path / "x.sql").write_text("SELECT * FROM users u JOIN devices d ON u.id = d.user_id;")
+    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    refs = scan_sql_table_references(tmp_path)
+    assert any(r.table_name == "devices" and r.role == "read" for r in refs)
+
+
+def test_update_emits_write_reference(tmp_path):
+    (tmp_path / "x.sql").write_text("UPDATE events SET active = false WHERE id = 1;")
+    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    refs = scan_sql_table_references(tmp_path)
+    assert any(r.table_name == "events" and r.role == "write" for r in refs)
+
+
+def test_cte_name_not_registered_as_table(tmp_path):
+    (tmp_path / "x.sql").write_text(
+        "WITH staging AS (SELECT * FROM users) "
+        "INSERT INTO events SELECT * FROM staging JOIN devices ON 1=1;"
+    )
+    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    refs = scan_sql_table_references(tmp_path)
+    # 'staging' is a CTE and must NOT appear as a table reference.
+    assert not any(r.table_name == "staging" for r in refs)
+    # Real tables (users, events, devices) should be present.
+    names = {r.table_name for r in refs}
+    assert "users" in names
+    assert "events" in names
+    assert "devices" in names
+
+
+def test_multi_cte_all_names_filtered(tmp_path):
+    """All CTE names in WITH a AS (...), b AS (...), c AS (...) should be
+    filtered from FROM/JOIN references."""
+    from textwrap import dedent
+    (tmp_path / "x.sql").write_text(dedent('''
+        WITH staging AS (SELECT * FROM users),
+             enriched AS (SELECT * FROM staging JOIN devices ON 1=1),
+             final AS (SELECT * FROM enriched)
+        SELECT * FROM final;
+    '''))
+    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    refs = scan_sql_table_references(tmp_path)
+    # CTE names: staging, enriched, final — none should appear.
+    names = {r.table_name for r in refs}
+    assert "staging" not in names
+    assert "enriched" not in names
+    assert "final" not in names
+    # Real tables: users, devices
+    assert "users" in names
+    assert "devices" in names
