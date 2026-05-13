@@ -233,6 +233,35 @@ python -m skills.open_table_migrator.cli <project> --mapping mapping.json
 
 In a single source file with multiple targets, the Python transformers emit one `catalog = ...` header plus one `tbl_<ns>_<name>` per target, and rewrite each call site to use the right variable. Calls whose path is a variable or doesn't match any glob (and has no fallback) become `# TODO(iceberg): could not resolve target ...` comments.
 
+## Constant folding
+
+The detector resolves name-to-literal bindings at the file level so that I/O calls using a named constant become as informative as those using a literal directly.
+
+```python
+EVENTS_PATH = "s3://bucket/events"
+df = pd.read_parquet(EVENTS_PATH)   # path_arg = "s3://bucket/events"
+```
+
+### What is resolved
+
+- **Python:** module-level `X = "..."`, function-local `X = "..."`, one level of `+` concat (`X = BASE + "/events"` when `BASE` is already a known literal).
+- **Java:** class `static final` and inline-initialised `final` fields, method-local `final` variables, one level of `+` concat across fields.
+- **Scala:** object/class-level `val`, def-local `val`, one level of `+` concat.
+
+### What is skipped
+
+- **f-strings** (`f"..."`, `s"..."` Scala) — interpolation depends on runtime values.
+- **`.format()`, `%`-format, multiplication** — only `+` concat is recognised.
+- **Reassignment** — any reassigned name is marked unresolvable. `attrs.skipped_reason = "reassigned"` records the reason.
+- **Constructor-only Java fields** — `private final String x;` initialised inside a constructor is not parsed.
+- **Cross-file references** — `from config import X` is not followed; constants in other files are out of scope.
+- **3+ operand concat** — `A + B + C` is not resolved; only single-`+` expressions.
+- **Non-literal RHS** — `os.getenv(...)`, function calls, etc.
+
+### Audit trail
+
+When a match resolves a name, `match.attrs["resolved_from"] = "NAME@file:line"` is set so the worklist preserves the original source location. The detector emits the same `path_arg` value regardless of whether it came from a literal at the call site or a resolved binding.
+
 ## Known Limitations
 
 - **Structured Streaming** (readStream/writeStream with parquet/orc sinks) is **detected but not rewritten** — the transformer inserts a `TODO(iceberg)` comment. Migrate manually using `.format("iceberg")` + `writeStream.toTable("ns.t")` / `.option("path", ...)`.
