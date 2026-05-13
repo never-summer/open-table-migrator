@@ -86,10 +86,7 @@ After automated conversion, manually review:
   import pyarrow.parquet as pq
   schema = pq.read_schema("existing.parquet")
   ```
-- **Partitioning** — `partitionBy("day")` is preserved as a `TODO` comment in the JVM transformer output. Add to the Iceberg partition spec manually:
-  ```sql
-  ALTER TABLE default.events ADD PARTITION FIELD day
-  ```
+- **Partitioning** — partition specifications are extracted structurally from `partitionBy(...)` / `bucketBy(...)` calls and propagated into the worklist. The migration agent uses them to generate the correct Iceberg `PartitionSpec`. See the "Partition spec extraction" section for details.
 - **Hive metastore catalog** — if the original project used Hive MetaStore, configure Iceberg's HiveCatalog:
   ```
   spark.sql.catalog.hive_prod = org.apache.iceberg.spark.SparkCatalog
@@ -457,7 +454,6 @@ The agent sees this warning and can flag it before applying the rewrite.
 - **pyarrow dataset API** (`ParquetFile`, `ParquetDataset`, `pa.dataset.*`) is also warn-only — rewrite to `catalog.load_table(...).scan().to_arrow()` by hand.
 - **Cloud catalog configs** (Glue, Nessie, REST) need manual setup — this tool generates SQLite dev config for Python, and leaves JVM catalog config untouched
 - **Hive table data migration** — the tool rewrites *code* but does not migrate existing parquet/ORC data; use `CALL system.migrate(...)` for in-place migration or `CTAS` for copy
-- **Schema inference** — partition specs are not automatically derived; `partitionBy(...)` becomes a `TODO` comment for the JVM transformer
 - **Scala 2.13 / Spark 3.4** — the generated Maven/Gradle coordinates target Spark 3.5 + Scala 2.12; adjust manually for other versions
 - **`LOCATION` clause** on `CREATE EXTERNAL TABLE` — rewritten to `USING iceberg LOCATION ...` but Iceberg's LOCATION semantics differ from Hive's; review manually.
 - **INSERT INTO / OVERWRITE** — detected but intentionally not rewritten (same SQL works on Iceberg tables). Reported only so you know the file is touching table data.

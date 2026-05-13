@@ -41,12 +41,20 @@ class WorklistEntry:
     resolved_table: str | None
     needs_manual_target: bool  # True when decision.unresolved()
     hint: str                  # short instruction for the agent
+
+    # free-form attrs carrying things like partition_mismatch warnings
+    # produced by analyzer.annotate_partition_mismatch.
+    attrs: dict[str, str] = field(default_factory=dict)
+
     partition_spec: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = asdict(self)
         if not d.get("partition_spec"):
             d.pop("partition_spec", None)
+        # Omit empty attrs for clean JSON diffs
+        if not d.get("attrs"):
+            d.pop("attrs", None)
         return d
 
 
@@ -177,6 +185,7 @@ def build_worklist(
                 resolved_table=target.table if target else None,
                 needs_manual_target=target is None,
                 hint=_hint_for(m.pattern_type, direction, decision),
+                attrs=dict(m.attrs),
                 partition_spec=ps_list,
             ))
 

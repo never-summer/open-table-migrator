@@ -140,3 +140,30 @@ def test_no_partition_mismatch_when_code_and_ddl_agree(tmp_path):
     write_matches = [m for m in matches if m.direction == "write"]
     for m in write_matches:
         assert "partition_mismatch" not in m.attrs
+
+
+def test_partition_mismatch_when_order_differs(tmp_path):
+    """Spec requires order-sensitive comparison. Code: [region, date],
+    DDL: [date, region] — both columns present, but in different order →
+    should be flagged as mismatch.
+    """
+    (tmp_path / "schema.sql").write_text(
+        "CREATE TABLE events (id INT) "
+        "PARTITIONED BY (date_col STRING, region STRING) "
+        "STORED AS PARQUET;"
+    )
+    (tmp_path / "job.py").write_text(
+        'df.write.partitionBy("region", "date_col").saveAsTable("events")\n'
+    )
+    from skills.open_table_migrator.detector import detect_all_io
+    from skills.open_table_migrator.sql_registry import scan_sql_files
+    from skills.open_table_migrator.analyzer import annotate_partition_mismatch
+
+    matches = detect_all_io(tmp_path)
+    defs = scan_sql_files(tmp_path)
+    annotate_partition_mismatch(matches, defs)
+    write_matches = [m for m in matches if m.direction == "write"]
+    flagged = [m for m in write_matches if "partition_mismatch" in m.attrs]
+    assert len(flagged) >= 1, (
+        "Order difference must be flagged as mismatch per spec"
+    )

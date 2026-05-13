@@ -494,7 +494,7 @@ def annotate_partition_mismatch(
             continue
         if not m.partition_spec and not d.partition_spec:
             continue
-        if set(m.partition_spec) == set(d.partition_spec):
+        if m.partition_spec == d.partition_spec:
             continue
         m.attrs["partition_mismatch"] = (
             f"code: {_format_transforms(m.partition_spec)}; "
