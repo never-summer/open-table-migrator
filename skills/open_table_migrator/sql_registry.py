@@ -116,7 +116,7 @@ _UPDATE_RX = re.compile(rf"\bUPDATE\s+{_NAME}\s+SET\b", re.IGNORECASE)
 _MERGE_RX = re.compile(rf"\bMERGE\s+INTO\s+{_NAME}", re.IGNORECASE)
 _FROM_RX = re.compile(rf"\bFROM\s+{_NAME}", re.IGNORECASE)
 _JOIN_RX = re.compile(rf"\bJOIN\s+{_NAME}", re.IGNORECASE)
-_WITH_CTE_RX = re.compile(r"\bWITH\s+(\w+)\s+AS\s*\(", re.IGNORECASE)
+_WITH_CTE_RX = re.compile(r"(?:\bWITH|,)\s+(\w+)\s+AS\s*\(", re.IGNORECASE)
 
 
 def _collect_cte_names(content: str) -> set[str]:

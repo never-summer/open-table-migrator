@@ -244,3 +244,25 @@ def test_cte_name_not_registered_as_table(tmp_path):
     assert "users" in names
     assert "events" in names
     assert "devices" in names
+
+
+def test_multi_cte_all_names_filtered(tmp_path):
+    """All CTE names in WITH a AS (...), b AS (...), c AS (...) should be
+    filtered from FROM/JOIN references."""
+    from textwrap import dedent
+    (tmp_path / "x.sql").write_text(dedent('''
+        WITH staging AS (SELECT * FROM users),
+             enriched AS (SELECT * FROM staging JOIN devices ON 1=1),
+             final AS (SELECT * FROM enriched)
+        SELECT * FROM final;
+    '''))
+    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    refs = scan_sql_table_references(tmp_path)
+    # CTE names: staging, enriched, final — none should appear.
+    names = {r.table_name for r in refs}
+    assert "staging" not in names
+    assert "enriched" not in names
+    assert "final" not in names
+    # Real tables: users, devices
+    assert "users" in names
+    assert "devices" in names

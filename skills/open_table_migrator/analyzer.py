@@ -487,8 +487,6 @@ def cross_reference_dynamic_sql(
                 if r.sql_file.resolve() == sql_file:
                     mentioned.add(r.table_name.lower())
             tables = tuple(defs_by_name[name] for name in mentioned if name in defs_by_name)
-            if not tables:
-                continue
             out.append(DynamicSqlCrossRef(
                 loader=loader,
                 sql_file=sql_file,

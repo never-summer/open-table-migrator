@@ -193,20 +193,21 @@ def write_worklist(
         "entries": [e.to_dict() for e in entries],
     }
     if dyn_cross:
+        resolved_root = project_root.resolve()
         payload["dynamic_sql_loaders"] = [
             {
-                "file": _rel(c.loader.file, project_root),
+                "file": _rel(c.loader.file.resolve(), resolved_root),
                 "line": c.loader.line,
                 "pattern": c.loader.pattern,
                 "sql_filename": c.loader.sql_filename,
                 "confidence": c.loader.confidence,
-                "resolved_to": _rel(c.sql_file, project_root),
+                "resolved_to": _rel(c.sql_file, resolved_root),
                 "match_kind": c.match_kind,
                 "tables": [
                     {
                         "name": t.table_name,
                         "format": t.format,
-                        "ddl_file": _rel(t.file, project_root),
+                        "ddl_file": _rel(t.file.resolve(), resolved_root),
                         "ddl_line": t.line,
                     }
                     for t in c.tables
