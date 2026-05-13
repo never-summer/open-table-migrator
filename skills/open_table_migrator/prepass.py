@@ -15,7 +15,9 @@ pre-pass that handles two kinds of edits which have no LLM judgment in them:
 These edits are cheap, boilerplate, and would be a waste of tokens if routed
 through the worklist.
 """
+import difflib
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from .analyzer import direction_of
@@ -33,6 +35,30 @@ _SKIP_MARKER_TEXT = "# iceberg: skipped by mapping (kept as parquet/orc)"
 _PYSPARK_PATTERN_PREFIXES = ("pyspark_", "spark_")
 
 
+@dataclass(frozen=True)
+class PrepassPlan:
+    """What prepass would do for one file."""
+    file: Path
+    original: str
+    modified: str
+    marker_count: int
+    pyspark_conf_added: bool
+
+    @property
+    def diff(self) -> str:
+        """Unified diff between original and modified content."""
+        return "".join(difflib.unified_diff(
+            self.original.splitlines(keepends=True),
+            self.modified.splitlines(keepends=True),
+            fromfile=str(self.file),
+            tofile=str(self.file),
+        ))
+
+    @property
+    def is_changed(self) -> bool:
+        return self.modified != self.original
+
+
 def _is_pyspark_pattern(pattern_type: str) -> bool:
     return any(pattern_type.startswith(p) for p in _PYSPARK_PATTERN_PREFIXES)
 
@@ -41,98 +67,110 @@ def _indent_of(line: str) -> str:
     return line[: len(line) - len(line.lstrip())]
 
 
+def plan_prepass(
+    matches: list[PatternMatch],
+    resolver: Resolver,
+) -> list[PrepassPlan]:
+    """Compute what prepass would change. No filesystem writes.
+
+    Returns only plans where the file would actually change. Order is by file path.
+    """
+    by_file: dict[Path, list[PatternMatch]] = {}
+    for m in matches:
+        by_file.setdefault(m.file, []).append(m)
+
+    plans: list[PrepassPlan] = []
+    for src_file, file_matches in sorted(by_file.items(), key=lambda kv: kv[0]):
+        try:
+            source = src_file.read_text(errors="replace")
+        except OSError:
+            continue
+        plan = _plan_one_file(src_file, source, file_matches, resolver)
+        if plan is not None and plan.is_changed:
+            plans.append(plan)
+    return plans
+
+
+def _plan_one_file(
+    src_file: Path,
+    source: str,
+    file_matches: list[PatternMatch],
+    resolver: Resolver,
+) -> PrepassPlan | None:
+    """Compute a PrepassPlan for one file. Pure: no I/O."""
+    original = source
+    lines = source.splitlines(keepends=True)
+
+    # ── Skip markers ─────────────────────────────────────────────
+    skip_lines: list[int] = []
+    for m in file_matches:
+        direction = direction_of(m.pattern_type)
+        d = resolver(m.path_arg, direction if direction in ("read", "write") else "any")
+        if d.skip:
+            skip_lines.append(m.line)
+
+    unique_skip_lines = sorted(set(skip_lines), reverse=True)
+    for line_no in unique_skip_lines:
+        idx = line_no - 1
+        if idx < 0 or idx >= len(lines):
+            continue
+        prev = lines[idx - 1] if idx > 0 else ""
+        if _SKIP_MARKER_TEXT in prev:
+            continue
+        indent = _indent_of(lines[idx])
+        marker = f"{indent}{_SKIP_MARKER_TEXT}\n"
+        lines.insert(idx, marker)
+
+    # ── Pyspark conf comment ─────────────────────────────────────
+    pyspark_conf_added = False
+    current_source = "".join(lines)
+    if src_file.suffix.lower() == ".py" and not _ICEBERG_CONF_MARKER_RE.search(current_source):
+        first: PatternMatch | None = None
+        for m in sorted(file_matches, key=lambda m: m.line):
+            if not _is_pyspark_pattern(m.pattern_type):
+                continue
+            direction = direction_of(m.pattern_type)
+            d = resolver(m.path_arg, direction if direction in ("read", "write") else "any")
+            if d.skip:
+                continue
+            first = m
+            break
+
+        if first is not None:
+            target_idx = first.line - 1
+            inserted_before = sum(
+                1 for sl in unique_skip_lines if (sl - 1) <= target_idx
+            )
+            target_idx += inserted_before
+            if 0 <= target_idx < len(lines):
+                indent = _indent_of(lines[target_idx])
+                block = [f"{indent}{text}\n" for text in _ICEBERG_CONF_LINES]
+                for i, blk_line in enumerate(block):
+                    lines.insert(target_idx + i, blk_line)
+                pyspark_conf_added = True
+
+    new_source = "".join(lines)
+    marker_count = len(unique_skip_lines)
+    return PrepassPlan(
+        file=src_file,
+        original=original,
+        modified=new_source,
+        marker_count=marker_count,
+        pyspark_conf_added=pyspark_conf_added,
+    )
+
+
 def run_prepass(
     matches: list[PatternMatch],
     resolver: Resolver,
 ) -> dict[Path, int]:
     """Apply skip markers and pyspark conf comments in place.
 
-    Returns a dict of ``{file: number_of_edits}`` for reporting. Only files
-    actually touched appear in the dict.
+    Returns ``{file: number_of_edits}`` for files actually touched.
+    Backward-compatible wrapper around plan_prepass + write.
     """
-    by_file: dict[Path, list[PatternMatch]] = {}
-    for m in matches:
-        by_file.setdefault(m.file, []).append(m)
-
     edits_per_file: dict[Path, int] = {}
-
-    for src_file, file_matches in by_file.items():
-        try:
-            source = src_file.read_text(errors="replace")
-        except OSError:
-            continue
-
-        original = source
-        lines = source.splitlines(keepends=True)
-
-        # ── 1. Skip markers ──────────────────────────────────────────
-        # Walk matches whose resolver decision is skip. Insert marker above
-        # the *logical* start line, once per line. Sort descending so line
-        # indices stay valid as we insert.
-        skip_lines: list[int] = []
-        for m in file_matches:
-            direction = direction_of(m.pattern_type)
-            d = resolver(m.path_arg, direction if direction in ("read", "write") else "any")
-            if d.skip:
-                skip_lines.append(m.line)
-
-        # Dedup by line number and skip lines that already have a marker above them
-        unique_skip_lines = sorted(set(skip_lines), reverse=True)
-        for line_no in unique_skip_lines:
-            idx = line_no - 1
-            if idx < 0 or idx >= len(lines):
-                continue
-            prev = lines[idx - 1] if idx > 0 else ""
-            if _SKIP_MARKER_TEXT in prev:
-                continue
-            indent = _indent_of(lines[idx])
-            marker = f"{indent}{_SKIP_MARKER_TEXT}\n"
-            lines.insert(idx, marker)
-
-        # ── 2. Pyspark conf comment ──────────────────────────────────
-        current_source = "".join(lines)
-        if src_file.suffix.lower() == ".py" and not _ICEBERG_CONF_MARKER_RE.search(current_source):
-            # First pyspark pattern whose decision is NOT skip
-            first: PatternMatch | None = None
-            # Match order in `file_matches` is detection order (source order)
-            for m in sorted(file_matches, key=lambda m: m.line):
-                if not _is_pyspark_pattern(m.pattern_type):
-                    continue
-                direction = direction_of(m.pattern_type)
-                d = resolver(m.path_arg, direction if direction in ("read", "write") else "any")
-                if d.skip:
-                    continue
-                first = m
-                break
-
-            if first is not None:
-                # Re-find the target line after the skip-marker insertions above may
-                # have shifted indices — walk and count.
-                # We only care about the line whose STRIPPED content starts the
-                # original matched code. Easiest: find by matching the first
-                # non-skip line whose stripped form contains something pyspark-ish,
-                # but that's brittle. Better: track line offsets.
-                #
-                # Since skip markers were inserted for the lines listed in
-                # unique_skip_lines, every inserted index ≤ target bumps the
-                # target index by 1.
-                target_idx = first.line - 1
-                inserted_before = sum(
-                    1 for sl in unique_skip_lines if (sl - 1) <= target_idx
-                )
-                target_idx += inserted_before
-                if 0 <= target_idx < len(lines):
-                    indent = _indent_of(lines[target_idx])
-                    block = [f"{indent}{text}\n" for text in _ICEBERG_CONF_LINES]
-                    for i, blk_line in enumerate(block):
-                        lines.insert(target_idx + i, blk_line)
-
-        new_source = "".join(lines)
-        if new_source != original:
-            src_file.write_text(new_source)
-            edits_per_file[src_file] = len(unique_skip_lines) + (
-                1 if src_file.suffix.lower() == ".py" and _ICEBERG_CONF_MARKER_RE.search(new_source)
-                and not _ICEBERG_CONF_MARKER_RE.search(original) else 0
-            )
-
+    for plan in plan_prepass(matches, resolver):
+        plan.file.write_text(plan.modified)
+        edits_per_file[plan.file] = plan.marker_count + (1 if plan.pyspark_conf_added else 0)
     return edits_per_file
