@@ -107,6 +107,45 @@ def test_dry_run_outputs_four_sections(tmp_path, capsys):
     assert "--- Build-file updates" in out
 
 
+def test_convert_project_normal_run_writes_runbook(tmp_path):
+    """convert_project (no dry-run) writes iceberg-runbook/ directory."""
+    (tmp_path / "job.py").write_text(
+        'import pandas as pd\n'
+        'df = pd.read_parquet("s3://bucket/events.parquet")\n'
+    )
+    rc = convert_project(
+        tmp_path,
+        table_name="events", namespace="analytics",
+        mapping=None,
+        update_deps=False,
+        dry_run=False,
+    )
+    assert rc == 0
+    runbook_dir = tmp_path / "iceberg-runbook"
+    assert runbook_dir.is_dir()
+    assert (runbook_dir / "README.md").exists()
+    assert (runbook_dir / "analytics.events").is_dir()
+    assert (runbook_dir / "analytics.events" / "phase1_add_files.sql").exists()
+
+
+def test_convert_project_dry_run_does_not_write_runbook(tmp_path, capsys):
+    """convert_project(dry_run=True) does NOT create iceberg-runbook/."""
+    (tmp_path / "job.py").write_text(
+        'import pandas as pd\n'
+        'df = pd.read_parquet("s3://bucket/events.parquet")\n'
+    )
+    convert_project(
+        tmp_path,
+        table_name="events", namespace="analytics",
+        mapping=None,
+        update_deps=False,
+        dry_run=True,
+    )
+    assert not (tmp_path / "iceberg-runbook").exists()
+    out = capsys.readouterr().out
+    assert "--- Runbook preview" in out
+
+
 def test_main_accepts_dry_run_flag(tmp_path, monkeypatch):
     """The --dry-run flag is accepted by argparse and threads through main()."""
     import sys

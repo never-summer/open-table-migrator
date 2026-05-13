@@ -353,3 +353,17 @@ def serialize_runbook(entries, sql_defs, dyn_cross, project_root):
         files[table_dir / "phase2_rewrite.sql"] = _render_phase2(m)
         files[table_dir / "phase3_switchover.sql"] = _render_phase3(m)
     return files
+
+
+def write_runbook(entries, sql_defs, dyn_cross, project_root):
+    """Write all runbook files to disk. Returns paths actually written.
+
+    Thin wrapper over serialize_runbook + write.
+    """
+    written = []
+    for rel_path, content in serialize_runbook(entries, sql_defs, dyn_cross, project_root).items():
+        abs_path = project_root / rel_path
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        abs_path.write_text(content)
+        written.append(abs_path)
+    return written
