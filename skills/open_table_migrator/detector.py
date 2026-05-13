@@ -1,5 +1,13 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
+
+
+@dataclass(frozen=True)
+class PartitionTransform:
+    kind: Literal["identity", "bucket"]
+    column: str
+    n: int | None = None      # only for bucket(N, col)
 
 
 @dataclass
@@ -12,6 +20,7 @@ class PatternMatch:
     end_line: int | None = None  # last physical line of the logical statement
     format: str | None = None
     attrs: dict[str, str] = field(default_factory=dict)
+    partition_spec: tuple[PartitionTransform, ...] = field(default_factory=tuple)
 
     @property
     def direction(self) -> str:
