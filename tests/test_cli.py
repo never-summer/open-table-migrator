@@ -105,3 +105,29 @@ def test_dry_run_outputs_four_sections(tmp_path, capsys):
     assert "--- Worklist preview" in out
     # Build-file section appears because pyproject.toml will get pyiceberg added
     assert "--- Build-file updates" in out
+
+
+def test_main_accepts_dry_run_flag(tmp_path, monkeypatch):
+    """The --dry-run flag is accepted by argparse and threads through main()."""
+    import sys
+    from skills.open_table_migrator import cli
+
+    (tmp_path / "job.py").write_text(
+        'import pandas as pd\n'
+        'df = pd.read_parquet("s3://bucket/x")\n'
+    )
+
+    argv = [
+        "prog", str(tmp_path),
+        "--table", "x", "--namespace", "ns",
+        "--no-deps",
+        "--dry-run",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    try:
+        cli.main()
+    except SystemExit as e:
+        assert e.code == 0
+    else:
+        raise AssertionError("main() should call sys.exit")
