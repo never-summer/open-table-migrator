@@ -2,9 +2,9 @@
 from pathlib import Path
 from textwrap import dedent
 
-from skills.open_table_migrator.detector import PatternMatch
-from skills.open_table_migrator.prepass import PrepassPlan, plan_prepass
-from skills.open_table_migrator.targets import Target
+from skills.open_table_migrator.scripts.detector import PatternMatch
+from skills.open_table_migrator.scripts.prepass import PrepassPlan, plan_prepass
+from skills.open_table_migrator.scripts.targets import Target
 
 
 def test_plan_prepass_for_skip_match_does_not_write_disk(tmp_path):
@@ -16,7 +16,7 @@ def test_plan_prepass_for_skip_match_does_not_write_disk(tmp_path):
     '''))
     original_content = src.read_text()
 
-    from skills.open_table_migrator.targets import Mapping, MappingEntry, build_resolver
+    from skills.open_table_migrator.scripts.targets import Mapping, MappingEntry, build_resolver
     mapping = Mapping(entries=[
         MappingEntry(path_glob="s3://legacy/*", skip=True, target=None),
     ])
@@ -53,7 +53,7 @@ def test_plan_prepass_for_pyspark_match_adds_conf_block(tmp_path):
     '''))
     original = src.read_text()
 
-    from skills.open_table_migrator.targets import Mapping, build_resolver
+    from skills.open_table_migrator.scripts.targets import Mapping, build_resolver
     fallback = Target(namespace="ns", table="t")
     resolver = build_resolver(Mapping(), fallback=fallback, project_root=tmp_path)
 
@@ -85,7 +85,7 @@ def test_plan_prepass_for_file_with_no_changes_returns_no_plan(tmp_path):
     src.write_text("# already migrated\n")
     original = src.read_text()
 
-    from skills.open_table_migrator.targets import Mapping, build_resolver
+    from skills.open_table_migrator.scripts.targets import Mapping, build_resolver
     fallback = Target(namespace="ns", table="t")
     resolver = build_resolver(Mapping(), fallback=fallback, project_root=tmp_path)
 

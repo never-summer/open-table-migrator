@@ -1,6 +1,6 @@
 from pathlib import Path
-from skills.open_table_migrator.detector import PatternMatch
-from skills.open_table_migrator.filters import filter_matches
+from skills.open_table_migrator.scripts.detector import PatternMatch
+from skills.open_table_migrator.scripts.filters import filter_matches
 
 
 def _m(file: str, pattern: str) -> PatternMatch:

@@ -3,7 +3,7 @@ import hashlib
 from pathlib import Path
 from textwrap import dedent
 
-from skills.open_table_migrator.cli import convert_project
+from skills.open_table_migrator.scripts.cli import convert_project
 
 
 def _sha(path: Path) -> str:
@@ -149,7 +149,7 @@ def test_convert_project_dry_run_does_not_write_runbook(tmp_path, capsys):
 def test_main_accepts_dry_run_flag(tmp_path, monkeypatch):
     """The --dry-run flag is accepted by argparse and threads through main()."""
     import sys
-    from skills.open_table_migrator import cli
+    from skills.open_table_migrator.scripts import cli
 
     (tmp_path / "job.py").write_text(
         'import pandas as pd\n'

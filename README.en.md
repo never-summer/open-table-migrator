@@ -57,8 +57,8 @@ Project analysis:
 ```bash
 PYTHONPATH=. python -c "
 from pathlib import Path
-from skills.open_table_migrator.detector import detect_all_io
-from skills.open_table_migrator.analyzer import build_report, format_report
+from skills.open_table_migrator import detect_all_io
+from skills.open_table_migrator import build_report, format_report
 
 matches = detect_all_io(Path('path/to/project'))
 print(format_report(build_report(matches), project_root=Path('path/to/project')))
@@ -68,14 +68,14 @@ print(format_report(build_report(matches), project_root=Path('path/to/project'))
 Single-table migration — emits `lakehouse-worklist.json`:
 
 ```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli path/to/project \
+PYTHONPATH=. python -m skills.open_table_migrator path/to/project \
     --table events --namespace analytics
 ```
 
 Multi-table migration:
 
 ```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli path/to/project \
+PYTHONPATH=. python -m skills.open_table_migrator path/to/project \
     --mapping ./lakehouse-mapping.json
 ```
 

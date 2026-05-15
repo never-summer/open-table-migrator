@@ -285,7 +285,7 @@ The `--dry-run` flag runs the full migration pipeline (detection, cross-referenc
 ### Usage
 
 ```bash
-PYTHONPATH=. python3 -m skills.open_table_migrator.cli <project_path> \
+PYTHONPATH=. python3 -m skills.open_table_migrator <project_path> \
     --table users --namespace analytics --dry-run
 ```
 

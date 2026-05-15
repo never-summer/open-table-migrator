@@ -2,7 +2,7 @@
 import textwrap
 from pathlib import Path
 
-from skills.open_table_migrator.ts_detector import ts_detect
+from skills.open_table_migrator.scripts.ts_detector import ts_detect
 
 
 def write(tmp_path: Path, name: str, content: str) -> Path:

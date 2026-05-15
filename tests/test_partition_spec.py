@@ -1,4 +1,4 @@
-from skills.open_table_migrator.detector import PartitionTransform, PatternMatch, detect_all_io
+from skills.open_table_migrator.scripts.detector import PartitionTransform, PatternMatch, detect_all_io
 from pathlib import Path
 from textwrap import dedent
 

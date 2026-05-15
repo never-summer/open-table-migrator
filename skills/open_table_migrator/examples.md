@@ -84,7 +84,7 @@ Projects that touch several logical tables use a **mapping file** to route each 
 
 Run it:
 ```bash
-python -m skills.open_table_migrator.cli <project> --mapping mapping.json
+python -m skills.open_table_migrator <project> --mapping mapping.json
 ```
 
 In a single source file with multiple targets, the worklist emits one entry per call site with the resolved `(namespace, table)`. Calls whose path is a variable or doesn't match any glob (and has no fallback) are flagged as unresolved so the LLM rewriter surfaces them to the user.

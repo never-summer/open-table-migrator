@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from skills.open_table_migrator.uri import URI, parse
+from skills.open_table_migrator.scripts.uri import URI, parse
 
 
 def test_parse_s3():
@@ -77,7 +77,7 @@ def test_parse_empty_string_returns_empty_file_uri():
 
 
 def test_parse_unknown_scheme_warns_and_returns_unknown(capsys):
-    from skills.open_table_migrator import uri as uri_module
+    from skills.open_table_migrator.scripts import uri as uri_module
     uri_module._UNKNOWN_WARNED.clear()
     result = parse("ftp://host.example/x")
     assert result == URI(
@@ -89,7 +89,7 @@ def test_parse_unknown_scheme_warns_and_returns_unknown(capsys):
     assert "unknown URI scheme" in captured.err
 
 
-from skills.open_table_migrator.uri import matches_glob
+from skills.open_table_migrator.scripts.uri import matches_glob
 
 
 def _u(s, project_root=None):
@@ -150,7 +150,7 @@ def test_match_question_mark_in_authority():
 
 # Fix 2: unknown-scheme matching
 def test_match_unknown_scheme_matches_itself_exactly(capsys):
-    from skills.open_table_migrator import uri as uri_module
+    from skills.open_table_migrator.scripts import uri as uri_module
     uri_module._UNKNOWN_WARNED.clear()
     uri = _u("ftp://host.example/x")
     assert matches_glob(uri, "ftp://host.example/x")
@@ -179,7 +179,7 @@ def test_match_single_star_crosses_segments_when_no_double_star():
 
 
 def test_parse_glob_pattern_warns_on_unknown_scheme(capsys):
-    from skills.open_table_migrator import uri as uri_module
+    from skills.open_table_migrator.scripts import uri as uri_module
     uri_module._UNKNOWN_WARNED.clear()
     # Indirectly via matches_glob — it calls _parse_glob_pattern
     matches_glob(_u("s3://bucket/x"), "hfds://typo/x")

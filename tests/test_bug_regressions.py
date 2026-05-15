@@ -3,10 +3,10 @@ import json
 import textwrap
 from pathlib import Path
 
-from skills.open_table_migrator.analyzer import find_ddl_references
-from skills.open_table_migrator.cli import convert_project
-from skills.open_table_migrator.deps import update_dependencies
-from skills.open_table_migrator.detector import detect_parquet_usage
+from skills.open_table_migrator.scripts.analyzer import find_ddl_references
+from skills.open_table_migrator.scripts.cli import convert_project
+from skills.open_table_migrator.scripts.deps import update_dependencies
+from skills.open_table_migrator.scripts.detector import detect_parquet_usage
 
 
 # ─── A2 / A3: multi-line JVM chain folding ───────────────────────────

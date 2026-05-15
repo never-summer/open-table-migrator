@@ -1,7 +1,7 @@
 from pathlib import Path
 from textwrap import dedent
 
-from skills.open_table_migrator.deps import (
+from skills.open_table_migrator.scripts.deps import (
     BuildFileUpdate,
     plan_dependencies_update,
     update_dependencies,

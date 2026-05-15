@@ -55,8 +55,8 @@ Skill + субагент для Claude Code.
 ```bash
 PYTHONPATH=. python -c "
 from pathlib import Path
-from skills.open_table_migrator.detector import detect_all_io
-from skills.open_table_migrator.analyzer import build_report, format_report
+from skills.open_table_migrator import detect_all_io
+from skills.open_table_migrator import build_report, format_report
 
 matches = detect_all_io(Path('путь/к/проекту'))
 print(format_report(build_report(matches), project_root=Path('путь/к/проекту')))
@@ -66,14 +66,14 @@ print(format_report(build_report(matches), project_root=Path('путь/к/про
 Миграция одной таблицы — выдаёт `lakehouse-worklist.json`:
 
 ```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli путь/к/проекту \
+PYTHONPATH=. python -m skills.open_table_migrator путь/к/проекту \
     --table events --namespace analytics
 ```
 
 Миграция нескольких таблиц:
 
 ```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli путь/к/проекту \
+PYTHONPATH=. python -m skills.open_table_migrator путь/к/проекту \
     --mapping ./iceberg-mapping.json
 ```
 

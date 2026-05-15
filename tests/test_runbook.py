@@ -1,11 +1,11 @@
 """Tests for runbook module."""
 from pathlib import Path
 
-from skills.open_table_migrator.detector import PartitionTransform
-from skills.open_table_migrator.runbook import (
+from skills.open_table_migrator.scripts.detector import PartitionTransform
+from skills.open_table_migrator.scripts.runbook import (
     CodeSite, TableMigration, build_table_migrations,
 )
-from skills.open_table_migrator.worklist import WorklistEntry
+from skills.open_table_migrator.scripts.worklist import WorklistEntry
 
 
 def _entry(*, file="src/job.py", start_line=1, pattern_type="pandas_read_parquet",
@@ -83,7 +83,7 @@ def test_partition_mismatch_picked_up_from_attrs():
     assert migrations[0].partition_mismatch == "code: identity(region); ddl: identity(date_col)"
 
 
-from skills.open_table_migrator.runbook import serialize_runbook
+from skills.open_table_migrator.scripts.runbook import serialize_runbook
 
 
 def test_serialize_runbook_one_migration_produces_5_files(tmp_path):

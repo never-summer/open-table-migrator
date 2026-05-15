@@ -2,9 +2,9 @@
 import json
 from pathlib import Path
 
-from skills.open_table_migrator.detector import detect_parquet_usage
-from skills.open_table_migrator.extract import extract_path_arg
-from skills.open_table_migrator.targets import (
+from skills.open_table_migrator.scripts.detector import detect_parquet_usage
+from skills.open_table_migrator.scripts.extract import extract_path_arg
+from skills.open_table_migrator.scripts.targets import (
     Mapping,
     MappingEntry,
     Target,
@@ -159,7 +159,7 @@ def test_load_mapping_with_skip_and_direction(tmp_path: Path):
 
 def test_mapping_matches_resolved_const_path(tmp_path):
     """Code uses a name → literal in const_table → mapping glob hits the resolved value."""
-    from skills.open_table_migrator.detector import detect_all_io
+    from skills.open_table_migrator.scripts.detector import detect_all_io
 
     (tmp_path / "job.py").write_text(
         'import pandas as pd\n'
@@ -185,7 +185,7 @@ def test_mapping_matches_resolved_const_path(tmp_path):
 def test_hdfs_mapping_matches_webhdfs_paths_in_code(tmp_path):
     """Mapping uses hdfs://; code uses webhdfs://. Sub-scheme equivalence
     means the entry resolves both."""
-    from skills.open_table_migrator.targets import (
+    from skills.open_table_migrator.scripts.targets import (
         Mapping, MappingEntry, Target, build_resolver,
     )
 
@@ -205,7 +205,7 @@ def test_hdfs_mapping_matches_webhdfs_paths_in_code(tmp_path):
 
 
 def test_abfs_mapping_matches_abfss_paths(tmp_path):
-    from skills.open_table_migrator.targets import (
+    from skills.open_table_migrator.scripts.targets import (
         Mapping, MappingEntry, Target, build_resolver,
     )
 
@@ -228,7 +228,7 @@ def test_abfs_mapping_matches_abfss_paths(tmp_path):
 def test_viewfs_requires_separate_mapping_from_hdfs(tmp_path):
     """viewfs is NOT equivalent to hdfs. A user with both schemes in code
     must list both in the mapping."""
-    from skills.open_table_migrator.targets import (
+    from skills.open_table_migrator.scripts.targets import (
         Decision, Mapping, MappingEntry, Target, build_resolver,
     )
 

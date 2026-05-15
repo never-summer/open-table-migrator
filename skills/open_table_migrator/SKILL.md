@@ -148,9 +148,9 @@ Only ask the user when S2T is missing, ambiguous, or when a table is not yet dec
 The CLI does **not** rewrite code on its own. It runs the detector, resolves each match against the user's table mapping, updates dependency manifests, and emits `lakehouse-worklist.json` — a per-call-site task list for the agent/LLM to execute via `Edit`.
 
 ```bash
-python -m skills.open_table_migrator.cli <project_path> --table <TABLE_NAME> --namespace <NAMESPACE>
+python -m skills.open_table_migrator <project_path> --table <TABLE_NAME> --namespace <NAMESPACE>
 # or, for multi-table projects:
-python -m skills.open_table_migrator.cli <project_path> --mapping ./lakehouse-mapping.json
+python -m skills.open_table_migrator <project_path> --mapping ./lakehouse-mapping.json
 ```
 
 For the mapping file format see the "Multi-table projects" section in [examples.md](./examples.md).
