@@ -28,7 +28,25 @@ description: Convert Parquet/ORC read/write to Apache Iceberg in Python, Java, o
 - Step 3 "Ask the User for Iceberg Table Details" is **skipped** — the answer comes from `S2T_GUIDE.md` + the project's S2T Excel file.
 - Step 6 "Create the Iceberg Table" — schema comes from S2T Excel, `TBLPROPERTIES` come from `ICEBERG_WF_GUIDE.md`, NOT from inference or interactive prompt.
 
-Confirm in your announce that both guides were read.
+### ⚠ MANDATORY — Iceberg Spark conf on every wf that touches a migrated table
+
+For every workflow (`wf/ctl/*.yml`) that reads, writes, or runs any procedure (compaction, expire_snapshots, remove_orphan_files, MERGE, UPDATE, DELETE, ad-hoc spark-submit) against a migrated Iceberg table, the `spark_submit_cmd` (or the corresponding `--conf` block) **MUST include all three** of these conf flags. Adding two of three is a broken migration — the third one silently makes the catalog Hive-typed and queries fall back to the wrong code path.
+
+```
+--conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+--conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog
+--conf spark.sql.catalog.spark_catalog.type=hive
+```
+
+Where to add:
+- New `wf_<table>_service` (per-table compaction) → in `spark_submit_cmd` param. Reuse `{{mart.ssc_schema_hdfs_care}}` if it already wires these three flags; otherwise add them inline.
+- Existing wf that previously read/wrote the parquet table → patch its `spark_submit_cmd` to add these flags. **Do not leave the old wf untouched** — same wf, new table format means new conf.
+- Ad-hoc `spark-submit` in CI/CD or local runs → same three flags.
+- `iceberg-runbook/<ns>.<table>/phase1_add_files.sql` and `phase2_rewrite.sql` execution wrappers in OpenFlow projects must also carry these flags.
+
+The full Spark conf block from `ICEBERG_WF_GUIDE.md` "Spark-конфигурация для Iceberg" includes additional retry/partial-progress flags — use the full block for compaction wf, and at minimum the three flags above for any other wf that touches the table.
+
+Confirm in your announce that both guides were read AND that you will propagate the three Iceberg conf flags into every affected wf.
 
 ## What This Skill Does
 
