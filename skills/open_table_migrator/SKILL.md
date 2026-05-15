@@ -19,12 +19,12 @@ description: Convert Parquet/ORC read/write to Apache Iceberg in Python, Java, o
 
 - 📖 **[ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md)** — Oozie-based `wf/ctl/*.yml` workflow system. Authoritative for:
   - Required Spark conf for Iceberg (`spark.sql.extensions=...IcebergSparkSessionExtensions`, `spark_catalog.type=hive`, `rewrite.partial-progress.enabled=true`, etc.) — see "Spark-конфигурация для Iceberg" section.
-  - Compaction / expire_snapshots / remove_orphan_files run via `wf_schema_hdfs_care` workflow, NOT via standalone Spark jobs. Every new Iceberg table needs `exp_iceberg_<table>.sql` and `upd_iceberg_<table>.sql` scripts under `src/main/resources/sql/dml/`.
+  - Compaction / expire_snapshots / remove_orphan_files run via the project's **maintenance wf**, NOT via standalone Spark jobs. **Locate the existing wf first** — `grep -rn 'rewrite_data_files\|expire_snapshots\|exp_iceberg\|hdfs_care' src/main/resources/wf/ctl/ src/main/resources/sql/dml/`. If found, reuse it (common existing names: `wf_schema_hdfs_care`, `wf_<table>_service`, project-specific variants). If not found, propose a new name following the project's convention — sensible options: `wf_schema_hdfs_care` (shared, one per schema), `wf_<table>_service` (per-table, easier scheduling), or `wf_iceberg_maintenance` (semantic-neutral). Every new Iceberg table needs `exp_iceberg_<table>.sql` and `upd_iceberg_<table>.sql` scripts under `src/main/resources/sql/dml/`.
   - Lock operations through CTL (`init_locks: checks/sets`, `*ctlCheckLockWrite`, `*ctlSetLockRead`).
   - Data-flow layers: `Sources → AUX (Parquet) → HIST (Iceberg) → AL (Iceberg)`. Read this section before deciding what to migrate vs. leave as parquet.
 
 **If a recommendation in this `SKILL.md`, `examples.md`, `reference.md`, or generated `iceberg-runbook/` contradicts these guides, the guides win.** Specifically:
-- Phase 2 in the phased runbook prescribes `CALL system.rewrite_data_files(...)` as a standalone call — in OpenFlow projects, this MUST be wired through `wf_schema_hdfs_care` per `ICEBERG_WF_GUIDE.md` "Сценарий 1/2".
+- Phase 2 in the phased runbook prescribes `CALL system.rewrite_data_files(...)` as a standalone call — in OpenFlow projects, this MUST be wired through the project's maintenance wf (locate via grep first; see ICEBERG_WF_GUIDE "Сценарий 1" = reuse existing, "Сценарий 2" = create new per the project's naming convention).
 - Step 3 "Ask the User for Iceberg Table Details" is **skipped** — the answer comes from `S2T_GUIDE.md` + the project's S2T Excel file.
 - Step 6 "Create the Iceberg Table" — schema comes from S2T Excel, `TBLPROPERTIES` come from `ICEBERG_WF_GUIDE.md`, NOT from inference or interactive prompt.
 
@@ -211,12 +211,12 @@ TBLPROPERTIES (
 2. Wire the table into compaction per [ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md) — this is **not optional**:
    - Create `src/main/resources/sql/dml/exp_iceberg_<table>.sql` (expire_snapshots) — template in ICEBERG_WF_GUIDE "Expire snapshots only".
    - Create `src/main/resources/sql/dml/upd_iceberg_<table>.sql` (full cycle) — template in ICEBERG_WF_GUIDE "Полный цикл обслуживания".
-   - Add the two `spark_driver_extraJavaOptions__hdfs_care_*` params for the table to existing `wf_schema_hdfs_care` in `src/main/resources/wf/ctl/ctl.yml`. If `wf_schema_hdfs_care` does not exist for the project, follow "Сценарий 2: Создай отдельный wf для таблицы".
+   - Add the two `spark_driver_extraJavaOptions__hdfs_care_*` params for the table to the **project's existing maintenance wf** in `src/main/resources/wf/ctl/`. Find it first: `grep -rn 'rewrite_data_files\|expire_snapshots\|exp_iceberg\|hdfs_care' src/main/resources/wf/ctl/`. Common names that may already exist: `wf_schema_hdfs_care`, `wf_<table>_service`, or a project-specific variant. If nothing found, follow ICEBERG_WF_GUIDE "Сценарий 2: Создай отдельный wf для таблицы" and pick a name matching the project's convention — propose 2–3 candidates to the user (`wf_<table>_service` for per-table, `wf_schema_hdfs_care` / `wf_iceberg_maintenance` for shared) and confirm before creating.
    - Use `entity_id` captured in Step 3.
 
 3. Update the Gherkin scenario (`ift.feature` / `st_skl.feature`) per S2T_GUIDE "Шаг 4: Добавь сценарий в Gherkin-файл" — add the new table to the DDL check sub-scenarios.
 
-The `iceberg-runbook/<ns>.<table>/phase2_rewrite.sql` emitted by the migrator is a **template** — in OpenFlow projects, replace it with the `wf_schema_hdfs_care` wiring above. Phase 1 (`add_files`) and Phase 3 (switchover) still apply.
+The `iceberg-runbook/<ns>.<table>/phase2_rewrite.sql` emitted by the migrator is a **template** — in OpenFlow projects, replace standalone execution with the project's maintenance wf wiring described above. Phase 1 (`add_files`) and Phase 3 (switchover) still apply.
 
 For the rest of the phased rollout (Phase 1 `add_files`, Phase 3 switchover options) and operational background (MoR/CoW, snapshot expiration), see [reference.md](./reference.md) sections "Phased migration runbook" and "Post-Migration Operational Concerns" — but read them through the lens of ICEBERG_WF_GUIDE.md (wf/ctl wiring, not standalone Spark jobs).
 

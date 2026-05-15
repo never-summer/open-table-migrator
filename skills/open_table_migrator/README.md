@@ -53,7 +53,7 @@ open_table_migrator/
 
 - **[ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md)** — система workflow `wf/ctl/*.yml` над Oozie. Описывает:
   - обязательную Spark-конфигурацию для Iceberg (три флага `--conf spark.sql.extensions=...`, `spark_catalog=...SparkSessionCatalog`, `spark_catalog.type=hive`);
-  - подключение compaction через `wf_schema_hdfs_care` (не standalone `CALL system.rewrite_data_files`);
+  - подключение compaction через **maintenance wf проекта** (сначала найди `grep -rn 'rewrite_data_files\|expire_snapshots\|hdfs_care' src/main/resources/wf/ctl/`; типовые имена — `wf_schema_hdfs_care`, `wf_<table>_service`, project-specific), а не через standalone `CALL system.rewrite_data_files`;
   - шаблоны `exp_iceberg_<table>.sql` / `upd_iceberg_<table>.sql`;
   - locks через CTL (`init_locks: checks/sets`).
 
@@ -158,7 +158,7 @@ PYTHONPATH=. python -m skills.open_table_migrator <project_path> \
 | `iceberg-runbook/README.md` | Top-level индекс миграций (по одной строке на таблицу) |
 | `iceberg-runbook/<ns>.<table>/migration-plan.md` | Markdown-план миграции таблицы: pre-flight, фазы, code sites, warnings |
 | `iceberg-runbook/<ns>.<table>/phase1_add_files.sql` | Spark SQL для `CALL system.add_files` (in-place, без переписывания данных) |
-| `iceberg-runbook/<ns>.<table>/phase2_rewrite.sql` | Spark SQL для `CALL system.rewrite_data_files` (компакция) — в OpenFlow проектах **подключается через `wf_schema_hdfs_care`**, не запускается standalone |
+| `iceberg-runbook/<ns>.<table>/phase2_rewrite.sql` | Spark SQL для `CALL system.rewrite_data_files` (компакция) — в OpenFlow проектах **подключается через maintenance wf** (найди существующий grep'ом или предложи имя: `wf_schema_hdfs_care` / `wf_<table>_service` / `wf_iceberg_maintenance`), не запускается standalone |
 | `iceberg-runbook/<ns>.<table>/phase3_switchover.sql` | Три OPTION-блока для cutover (Spark VIEW / HMS rename / per-call-site update) |
 | Обновления `pyproject.toml` / `pom.xml` / `build.gradle` / etc. | Добавление `pyiceberg[sql-sqlite]` или `iceberg-spark-runtime` |
 
