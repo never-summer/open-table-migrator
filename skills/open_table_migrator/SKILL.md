@@ -5,7 +5,125 @@ description: Convert Parquet/ORC read/write to Apache Iceberg in Python, Java, o
 
 # Parquet/ORC → Iceberg Conversion Skill
 
-**Announce at start:** "I'm using the open-table-migrator skill to convert this project."
+**Announce at start (verbatim, three lines):**
+> "I'm using the open-table-migrator skill to convert this project."
+> "Phase A: I will first do a read-only reconnaissance pass — read the mandatory guides, scan for I/O patterns AND pipeline anti-patterns (MERGE / `.changes` / MoR opportunities), and locate existing maintenance wf + iceberg conf YAML param."
+> "Phase B: I will then present a migration plan and STOP. I will not modify any file until you reply 'go' (or specify changes)."
+
+## ⛔ Workflow gate — three mandatory phases, in order
+
+**You MUST execute these phases in order. Do NOT modify any file before Phase B is approved by the user.** This gate exists because past runs skipped the pipeline-analysis pass and went straight to mechanical Parquet→Iceberg rewrites, missing the MERGE / `.changes` opportunities the user is paying you to find.
+
+### Phase A — Reconnaissance (read-only, no writes)
+
+Do all of these. Each is mandatory:
+
+1. **Read the mandatory guides** in this skill directory:
+   - [S2T_GUIDE.md](./S2T_GUIDE.md) — for table-spec source-of-truth in OpenFlow projects
+   - [ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md) — for wf/ctl, compaction, Spark conf
+   - Skim [examples.md](./examples.md) and [reference.md](./reference.md) for patterns you'll need
+
+2. **Run the detector** (read-only — does not modify files, even without `--dry-run`):
+   ```bash
+   PYTHONPATH=. python -m skills.open_table_migrator <project> --table <placeholder> --namespace <placeholder> --dry-run
+   ```
+   Use placeholders for `--table`/`--namespace` if S2T-derived ones aren't ready yet — the goal is to surface I/O sites and the runbook preview. Read the printed worklist + runbook preview.
+
+3. **Pipeline anti-pattern scan** — explicit commands (run each, save findings for the Phase B report):
+   ```bash
+   # Increment / diff / changelog SQL (-> MERGE / .changes candidates):
+   find <project> -type f \( -name "*_inc.sql" -o -name "*_diff*.sql" -o -name "*_changes*.sql" -o -name "*_delta*.sql" \)
+
+   # FULL OUTER JOIN between snapshots (-> MERGE candidates):
+   grep -rn "FULL OUTER JOIN\|full outer join" <project>/src/main/resources/sql/
+
+   # EXCEPT / MINUS between filtered slices (-> MERGE candidates):
+   grep -rn -i "\bEXCEPT\b\|\bMINUS\b" <project>/src/main/resources/sql/
+
+   # Tombstone columns (-> MoR + native DELETE candidates):
+   grep -rn -i "is_deleted\|deleted_at\|is_active.*valid_to" <project>/src/main/resources/sql/ddl/
+
+   # Custom changelog/CDC tables (-> table.changes candidates):
+   find <project> -type f -name "*_changelog*.sql" -o -name "*_cdc*.sql" -o -name "*_history*.sql"
+   ```
+   Full pattern catalogue + caveats: [reference.md § Iceberg-native pipeline optimizations](./reference.md#iceberg-native-pipeline-optimizations).
+
+4. **Locate existing maintenance wf** (do NOT invent a name yet):
+   ```bash
+   grep -rn 'rewrite_data_files\|expire_snapshots\|exp_iceberg\|hdfs_care' \
+       <project>/src/main/resources/wf/ctl/ <project>/src/main/resources/sql/dml/
+   ```
+   Record what you found (or "nothing — will propose in Phase B").
+
+5. **Locate existing Iceberg conf YAML parameter** (do NOT invent a name yet):
+   ```bash
+   grep -rn 'spark.sql.extensions.*IcebergSparkSessionExtensions\|SparkSessionCatalog' \
+       <project>/src/main/resources/wf/ <project>/src/main/resources/devops/ \
+       <project>/src/main/resources/mart*.yml
+   ```
+   Record what you found.
+
+6. **Locate S2T inputs** — `<project>/src/main/resources/s2t/s2t.xlsx` (or `hadoop_S2T_*.xlsx`), `<project>/src/main/resources/devops/devops.json`, `<project>/src/main/resources/wf/ctl/1_ctl_entities.yml`. Pull `datamart_name`, ТУЗ, yarn queue, per-table `entity_id`. If S2T Excel is unreadable, ask the user — do not invent.
+
+### Phase B — Present the migration plan and STOP
+
+After Phase A, output **one structured plan** to the user using the template below, then **stop and wait for explicit approval**. Do not start writing files.
+
+```
+## Phase A findings + proposed plan
+
+### Tables to migrate (from worklist + S2T)
+| # | Source | Target Iceberg | Format | Code sites | DDL file | entity_id |
+|---|---|---|---|---|---|---|
+| 1 | ... | ns.t | parquet | 7 | ddl/x.sql | 920... |
+...
+
+### Pipeline anti-patterns detected (Iceberg-native proposals — NEEDS APPROVAL)
+1. `path/to/t_X_inc.sql:1` — FULL OUTER JOIN today/yesterday → propose `MERGE INTO` (see reference.md §Iceberg-native pipeline optimizations Pattern 1).
+   ALSO propose: retire `wf_X_inc` workflow entry once MERGE replaces the diff.
+2. (or: "no anti-patterns found")
+...
+
+### Existing infrastructure found (Phase A grep results)
+- Maintenance wf: `<name>` at `wf/ctl/<file>.yml:<line>` — will REUSE.
+  (or: "not found — propose name: wf_<table>_service / wf_schema_hdfs_care / wf_iceberg_maintenance — pick one")
+- Iceberg conf YAML param: `{{mart.<name>}}` at `mart.yml:<line>` — will REUSE.
+  (or: "not found — propose name: spark_iceberg / iceberg_conf / spark_submit_cmd_iceberg_service — pick one")
+
+### Files I plan to change (or create) in Phase C
+- mart.yml — define `<conf_param_name>` (if not reusing)
+- ctl.yml — add `<wf_name>` per-table maintenance entry, patch existing wf reading these tables to add `{{mart.<conf_param_name>}}`
+- sql/ddl/<layer>/<table>.sql — switch STORED AS PARQUET → USING iceberg + TBLPROPERTIES
+- sql/dml/exp_iceberg_<table>.sql / upd_iceberg_<table>.sql — new compaction scripts
+- s2t/qaapi/*.feature — add Gherkin DDL scenarios for new tables
+- (If anti-pattern accepted) sql/dml/<table>_inc.sql — replace with MERGE INTO + `.changes` consumer
+
+### Open questions for the user (BLOCK on these)
+- MoR vs CoW per table? (default: MoR if table has UPDATE/DELETE/MERGE in DML)
+- Accept the MERGE / `.changes` rewrite for `t_X_inc.sql`? (Y/N)
+- Maintenance wf name to use (if not reusing)?
+- Iceberg conf YAML param name (if not reusing)?
+
+---
+Reply **"go"** to apply this plan as-is. Or list changes/exclusions.
+```
+
+### Phase C — Apply changes (writes), only after explicit user approval
+
+Execute in this fixed order so reviews stay sane:
+1. `mart.yml` — define / reuse the iceberg conf YAML param.
+2. `wf/ctl/*.yml` — maintenance wf + patches to existing wf (`{{mart.<conf>}}` reference, no inlining).
+3. `sql/ddl/<layer>/<table>.sql` — switch to `USING iceberg` + TBLPROPERTIES per S2T.
+4. `sql/dml/exp_iceberg_<table>.sql` and `upd_iceberg_<table>.sql` — compaction scripts per ICEBERG_WF_GUIDE templates.
+5. `s2t/qaapi/*.feature` — Gherkin scenarios.
+6. (If approved) Replace `*_inc.sql` with MERGE INTO + retire `wf_*_inc`.
+7. Generate `iceberg-runbook/` via `python -m skills.open_table_migrator <project> --mapping <or --table>` without `--dry-run`.
+
+After Phase C: print a final summary (what was changed, what was created, what was retired) and remind the user to re-run the detector to verify zero residual `STORED AS PARQUET` / `USING parquet` references.
+
+---
+
+The three MANDATORY blocks below detail the rules for guides, conf, and pipeline analysis. The workflow gate above is the operational discipline that makes those rules actually apply.
 
 ## ⚠ MANDATORY — read these two guides before doing anything
 
@@ -19,12 +137,12 @@ description: Convert Parquet/ORC read/write to Apache Iceberg in Python, Java, o
 
 - 📖 **[ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md)** — Oozie-based `wf/ctl/*.yml` workflow system. Authoritative for:
   - Required Spark conf for Iceberg (`spark.sql.extensions=...IcebergSparkSessionExtensions`, `spark_catalog.type=hive`, `rewrite.partial-progress.enabled=true`, etc.) — see "Spark-конфигурация для Iceberg" section.
-  - Compaction / expire_snapshots / remove_orphan_files run via `wf_schema_hdfs_care` workflow, NOT via standalone Spark jobs. Every new Iceberg table needs `exp_iceberg_<table>.sql` and `upd_iceberg_<table>.sql` scripts under `src/main/resources/sql/dml/`.
+  - Compaction / expire_snapshots / remove_orphan_files run via the project's **maintenance wf**, NOT via standalone Spark jobs. **Locate the existing wf first** — `grep -rn 'rewrite_data_files\|expire_snapshots\|exp_iceberg\|hdfs_care' src/main/resources/wf/ctl/ src/main/resources/sql/dml/`. If found, reuse it (common existing names: `wf_schema_hdfs_care`, `wf_<table>_service`, project-specific variants). If not found, propose a new name following the project's convention — sensible options: `wf_schema_hdfs_care` (shared, one per schema), `wf_<table>_service` (per-table, easier scheduling), or `wf_iceberg_maintenance` (semantic-neutral). Every new Iceberg table needs `exp_iceberg_<table>.sql` and `upd_iceberg_<table>.sql` scripts under `src/main/resources/sql/dml/`.
   - Lock operations through CTL (`init_locks: checks/sets`, `*ctlCheckLockWrite`, `*ctlSetLockRead`).
   - Data-flow layers: `Sources → AUX (Parquet) → HIST (Iceberg) → AL (Iceberg)`. Read this section before deciding what to migrate vs. leave as parquet.
 
 **If a recommendation in this `SKILL.md`, `examples.md`, `reference.md`, or generated `iceberg-runbook/` contradicts these guides, the guides win.** Specifically:
-- Phase 2 in the phased runbook prescribes `CALL system.rewrite_data_files(...)` as a standalone call — in OpenFlow projects, this MUST be wired through `wf_schema_hdfs_care` per `ICEBERG_WF_GUIDE.md` "Сценарий 1/2".
+- Phase 2 in the phased runbook prescribes `CALL system.rewrite_data_files(...)` as a standalone call — in OpenFlow projects, this MUST be wired through the project's maintenance wf (locate via grep first; see ICEBERG_WF_GUIDE "Сценарий 1" = reuse existing, "Сценарий 2" = create new per the project's naming convention).
 - Step 3 "Ask the User for Iceberg Table Details" is **skipped** — the answer comes from `S2T_GUIDE.md` + the project's S2T Excel file.
 - Step 6 "Create the Iceberg Table" — schema comes from S2T Excel, `TBLPROPERTIES` come from `ICEBERG_WF_GUIDE.md`, NOT from inference or interactive prompt.
 
@@ -38,15 +156,39 @@ For every workflow (`wf/ctl/*.yml`) that reads, writes, or runs any procedure (c
 --conf spark.sql.catalog.spark_catalog.type=hive
 ```
 
-Where to add:
-- New `wf_<table>_service` (per-table compaction) → in `spark_submit_cmd` param. Reuse `{{mart.ssc_schema_hdfs_care}}` if it already wires these three flags; otherwise add them inline.
-- Existing wf that previously read/wrote the parquet table → patch its `spark_submit_cmd` to add these flags. **Do not leave the old wf untouched** — same wf, new table format means new conf.
-- Ad-hoc `spark-submit` in CI/CD or local runs → same three flags.
+**Define the flags ONCE as a shared YAML parameter — do NOT inline them per wf.** Inlining means three flags get copy-pasted into every affected wf, drift over time, and the next dev has to remember to add them. The right pattern is:
+
+1. **Search the project first** for an existing shared iceberg-conf parameter:
+   ```bash
+   grep -rn 'spark.sql.extensions.*IcebergSparkSessionExtensions\|SparkSessionCatalog' \
+       src/main/resources/wf/ src/main/resources/devops/ src/main/resources/mart*.yml
+   ```
+   Typical existing names: `spark_submit_cmd_iceberg_service` (from `ICEBERG_WF_GUIDE.md`), `spark_iceberg`, `iceberg_conf`, project-specific. If found → reference it as `{{mart.<name>}}` in every affected wf's `spark_submit_cmd`. **Use the name that already exists, don't rename it.**
+
+2. **If not found**, define a new shared parameter in `src/main/resources/mart.yml` (or the project's equivalent shared-config file). Propose 2–3 naming candidates to the user before adding — sensible options: `spark_iceberg` (short), `iceberg_conf` (semantic), `spark_submit_cmd_iceberg_service` (matches ICEBERG_WF_GUIDE convention). Example:
+   ```yaml
+   # src/main/resources/mart.yml (or shared config)
+   spark_iceberg: >
+     --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+     --conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog
+     --conf spark.sql.catalog.spark_catalog.type=hive
+   ```
+   Then reference from every affected wf:
+   ```yaml
+   - param:
+       name: spark_submit_cmd
+       prior_value: "{{mart.spark_submit_cmd}} {{mart.spark_iceberg}}"
+   ```
+
+**Where to apply the reference (every place that touches a migrated table):**
+- New per-table service wf (whatever name the maintenance wf has — see above) → `spark_submit_cmd` references `{{mart.<iceberg_conf_name>}}`.
+- Existing wf that previously read/wrote the parquet table → patch its `spark_submit_cmd` to also reference `{{mart.<iceberg_conf_name>}}`. **Do not leave the old wf untouched** — same wf, new table format means new conf.
+- Ad-hoc `spark-submit` in CI/CD or local runs → same three flags inline (no YAML there, so duplication is unavoidable).
 - `iceberg-runbook/<ns>.<table>/phase1_add_files.sql` and `phase2_rewrite.sql` execution wrappers in OpenFlow projects must also carry these flags.
 
-The full Spark conf block from `ICEBERG_WF_GUIDE.md` "Spark-конфигурация для Iceberg" includes additional retry/partial-progress flags — use the full block for compaction wf, and at minimum the three flags above for any other wf that touches the table.
+The full Spark conf block from `ICEBERG_WF_GUIDE.md` "Spark-конфигурация для Iceberg" includes additional retry/partial-progress flags (`rewrite.partial-progress.*`, `commit.retry.*`). For compaction wf wrap the full block as `spark_submit_cmd_iceberg_service` (or whatever the project names the compaction-specific variant) and reference it. For other read/write wf the three flags above are the minimum.
 
-Confirm in your announce that both guides were read AND that you will propagate the three Iceberg conf flags into every affected wf.
+Confirm in your announce that both guides were read AND that you will either reuse the project's existing iceberg-conf YAML parameter, or define a new one (named per the user's choice) and reference it from every affected wf — no inlining.
 
 ### ⚠ MANDATORY — analyze the pipeline, propose Iceberg-native alternatives (do NOT translate 1:1)
 
@@ -211,12 +353,12 @@ TBLPROPERTIES (
 2. Wire the table into compaction per [ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md) — this is **not optional**:
    - Create `src/main/resources/sql/dml/exp_iceberg_<table>.sql` (expire_snapshots) — template in ICEBERG_WF_GUIDE "Expire snapshots only".
    - Create `src/main/resources/sql/dml/upd_iceberg_<table>.sql` (full cycle) — template in ICEBERG_WF_GUIDE "Полный цикл обслуживания".
-   - Add the two `spark_driver_extraJavaOptions__hdfs_care_*` params for the table to existing `wf_schema_hdfs_care` in `src/main/resources/wf/ctl/ctl.yml`. If `wf_schema_hdfs_care` does not exist for the project, follow "Сценарий 2: Создай отдельный wf для таблицы".
+   - Add the two `spark_driver_extraJavaOptions__hdfs_care_*` params for the table to the **project's existing maintenance wf** in `src/main/resources/wf/ctl/`. Find it first: `grep -rn 'rewrite_data_files\|expire_snapshots\|exp_iceberg\|hdfs_care' src/main/resources/wf/ctl/`. Common names that may already exist: `wf_schema_hdfs_care`, `wf_<table>_service`, or a project-specific variant. If nothing found, follow ICEBERG_WF_GUIDE "Сценарий 2: Создай отдельный wf для таблицы" and pick a name matching the project's convention — propose 2–3 candidates to the user (`wf_<table>_service` for per-table, `wf_schema_hdfs_care` / `wf_iceberg_maintenance` for shared) and confirm before creating.
    - Use `entity_id` captured in Step 3.
 
 3. Update the Gherkin scenario (`ift.feature` / `st_skl.feature`) per S2T_GUIDE "Шаг 4: Добавь сценарий в Gherkin-файл" — add the new table to the DDL check sub-scenarios.
 
-The `iceberg-runbook/<ns>.<table>/phase2_rewrite.sql` emitted by the migrator is a **template** — in OpenFlow projects, replace it with the `wf_schema_hdfs_care` wiring above. Phase 1 (`add_files`) and Phase 3 (switchover) still apply.
+The `iceberg-runbook/<ns>.<table>/phase2_rewrite.sql` emitted by the migrator is a **template** — in OpenFlow projects, replace standalone execution with the project's maintenance wf wiring described above. Phase 1 (`add_files`) and Phase 3 (switchover) still apply.
 
 For the rest of the phased rollout (Phase 1 `add_files`, Phase 3 switchover options) and operational background (MoR/CoW, snapshot expiration), see [reference.md](./reference.md) sections "Phased migration runbook" and "Post-Migration Operational Concerns" — but read them through the lens of ICEBERG_WF_GUIDE.md (wf/ctl wiring, not standalone Spark jobs).
 
