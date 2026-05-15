@@ -52,7 +52,7 @@ open_table_migrator/
 - **[S2T_GUIDE.md](./S2T_GUIDE.md)** — система Spec-to-Test, используемая в проектах OpenFlow (`custom_blago_dzo_*` и др.). Описывает откуда брать схему таблиц (`s2t.xlsx`, листы `Tables`/`Columns`/`Partitions`), как заполнить Gherkin-сценарии, где взять `entity_id` / ТУЗ / yarn queue / `datamart_name`. **DDL генерируется из S2T, не из существующего parquet.**
 
 - **[ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md)** — система workflow `wf/ctl/*.yml` над Oozie. Описывает:
-  - обязательную Spark-конфигурацию для Iceberg (три флага `--conf spark.sql.extensions=...`, `spark_catalog=...SparkSessionCatalog`, `spark_catalog.type=hive`);
+  - обязательную Spark-конфигурацию для Iceberg (три флага `--conf spark.sql.extensions=...`, `spark_catalog=...SparkSessionCatalog`, `spark_catalog.type=hive`) — определяется **одной разделяемой переменной** в `mart.yml` (сначала grep'ом ищется существующая: `spark_submit_cmd_iceberg_service` / `spark_iceberg` / `iceberg_conf` / project-specific; если нет — создаётся новая и подключается через `{{mart.<name>}}` во все затронутые wf, без инлайна);
   - подключение compaction через **maintenance wf проекта** (сначала найди `grep -rn 'rewrite_data_files\|expire_snapshots\|hdfs_care' src/main/resources/wf/ctl/`; типовые имена — `wf_schema_hdfs_care`, `wf_<table>_service`, project-specific), а не через standalone `CALL system.rewrite_data_files`;
   - шаблоны `exp_iceberg_<table>.sql` / `upd_iceberg_<table>.sql`;
   - locks через CTL (`init_locks: checks/sets`).
