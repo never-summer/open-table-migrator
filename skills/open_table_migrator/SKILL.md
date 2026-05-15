@@ -38,15 +38,39 @@ For every workflow (`wf/ctl/*.yml`) that reads, writes, or runs any procedure (c
 --conf spark.sql.catalog.spark_catalog.type=hive
 ```
 
-Where to add:
-- New `wf_<table>_service` (per-table compaction) → in `spark_submit_cmd` param. Reuse `{{mart.ssc_schema_hdfs_care}}` if it already wires these three flags; otherwise add them inline.
-- Existing wf that previously read/wrote the parquet table → patch its `spark_submit_cmd` to add these flags. **Do not leave the old wf untouched** — same wf, new table format means new conf.
-- Ad-hoc `spark-submit` in CI/CD or local runs → same three flags.
+**Define the flags ONCE as a shared YAML parameter — do NOT inline them per wf.** Inlining means three flags get copy-pasted into every affected wf, drift over time, and the next dev has to remember to add them. The right pattern is:
+
+1. **Search the project first** for an existing shared iceberg-conf parameter:
+   ```bash
+   grep -rn 'spark.sql.extensions.*IcebergSparkSessionExtensions\|SparkSessionCatalog' \
+       src/main/resources/wf/ src/main/resources/devops/ src/main/resources/mart*.yml
+   ```
+   Typical existing names: `spark_submit_cmd_iceberg_service` (from `ICEBERG_WF_GUIDE.md`), `spark_iceberg`, `iceberg_conf`, project-specific. If found → reference it as `{{mart.<name>}}` in every affected wf's `spark_submit_cmd`. **Use the name that already exists, don't rename it.**
+
+2. **If not found**, define a new shared parameter in `src/main/resources/mart.yml` (or the project's equivalent shared-config file). Propose 2–3 naming candidates to the user before adding — sensible options: `spark_iceberg` (short), `iceberg_conf` (semantic), `spark_submit_cmd_iceberg_service` (matches ICEBERG_WF_GUIDE convention). Example:
+   ```yaml
+   # src/main/resources/mart.yml (or shared config)
+   spark_iceberg: >
+     --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+     --conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog
+     --conf spark.sql.catalog.spark_catalog.type=hive
+   ```
+   Then reference from every affected wf:
+   ```yaml
+   - param:
+       name: spark_submit_cmd
+       prior_value: "{{mart.spark_submit_cmd}} {{mart.spark_iceberg}}"
+   ```
+
+**Where to apply the reference (every place that touches a migrated table):**
+- New per-table service wf (whatever name the maintenance wf has — see above) → `spark_submit_cmd` references `{{mart.<iceberg_conf_name>}}`.
+- Existing wf that previously read/wrote the parquet table → patch its `spark_submit_cmd` to also reference `{{mart.<iceberg_conf_name>}}`. **Do not leave the old wf untouched** — same wf, new table format means new conf.
+- Ad-hoc `spark-submit` in CI/CD or local runs → same three flags inline (no YAML there, so duplication is unavoidable).
 - `iceberg-runbook/<ns>.<table>/phase1_add_files.sql` and `phase2_rewrite.sql` execution wrappers in OpenFlow projects must also carry these flags.
 
-The full Spark conf block from `ICEBERG_WF_GUIDE.md` "Spark-конфигурация для Iceberg" includes additional retry/partial-progress flags — use the full block for compaction wf, and at minimum the three flags above for any other wf that touches the table.
+The full Spark conf block from `ICEBERG_WF_GUIDE.md` "Spark-конфигурация для Iceberg" includes additional retry/partial-progress flags (`rewrite.partial-progress.*`, `commit.retry.*`). For compaction wf wrap the full block as `spark_submit_cmd_iceberg_service` (or whatever the project names the compaction-specific variant) and reference it. For other read/write wf the three flags above are the minimum.
 
-Confirm in your announce that both guides were read AND that you will propagate the three Iceberg conf flags into every affected wf.
+Confirm in your announce that both guides were read AND that you will either reuse the project's existing iceberg-conf YAML parameter, or define a new one (named per the user's choice) and reference it from every affected wf — no inlining.
 
 ### ⚠ MANDATORY — analyze the pipeline, propose Iceberg-native alternatives (do NOT translate 1:1)
 
