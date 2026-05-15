@@ -55,11 +55,6 @@ spark_submit_cmd_iceberg_service: >
   --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
   --conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog
   --conf spark.sql.catalog.spark_catalog.type=hive
-  --conf spark.sql.catalog.spark_catalog.rewrite.partial-progress.enabled=true
-  --conf spark.sql.catalog.spark_catalog.rewrite.partial-progress.max-commits=50
-  --conf spark.sql.catalog.spark_catalog.commit.retry.num-retries=5
-  --conf spark.sql.catalog.spark_catalog.commit.retry.min-wait-ms=100
-  --conf spark.sql.catalog.spark_catalog.commit.retry.max-wait-ms=5000
 ```
 
 ### Переменные окружения (из `{{mart.*}}`)
