@@ -355,6 +355,114 @@ Runbook generation runs alongside worklist generation on every `convert_project`
 - No DAG between tables (each migration is independent).
 - `partition_mismatch` warning is included in the runbook, but the operator must decide which side (code or DDL) is correct.
 
+## Iceberg-native pipeline optimizations
+
+Iceberg removes the need for several Parquet-era pipeline patterns. When migrating, look for these and propose alternatives — see the mandatory analysis pass in [SKILL.md](./SKILL.md). This section is the deep dive: full before/after SQL, detection logic, and migration caveats.
+
+### Pattern 1: Increment computation via snapshot diff
+
+**Setup.** A daily job lands a full table snapshot under partition `ctl_loading=<run_date>`. A separate SQL (`t_<x>_inc.sql`) joins today's partition with yesterday's to derive the row-level delta — used downstream to emit change events to Kafka / downstream marts.
+
+**Before (Parquet):**
+
+```sql
+-- t_agr_bond_inc.sql (parquet era)
+WITH today AS (
+  SELECT * FROM agr_bond WHERE ctl_loading = ${today}
+), yesterday AS (
+  SELECT * FROM agr_bond WHERE ctl_loading = ${yesterday}
+)
+SELECT
+  CASE WHEN y.id IS NULL THEN 'INSERT'
+       WHEN t.id IS NULL THEN 'DELETE'
+       WHEN t.attr1 <> y.attr1 OR t.attr2 <> y.attr2 OR ... THEN 'UPDATE'
+  END AS op,
+  COALESCE(t.id, y.id) AS id,
+  t.attr1, t.attr2, ...
+FROM today t
+FULL OUTER JOIN yesterday y ON t.id = y.id
+WHERE NOT (y.id IS NOT NULL AND t.id IS NOT NULL
+           AND t.attr1 = y.attr1 AND t.attr2 = y.attr2 AND ...);
+```
+
+**After (Iceberg) — two valid replacements depending on intent:**
+
+**(a) Maintain the target table from a source-of-truth dataset → `MERGE INTO`:**
+
+```sql
+MERGE INTO {{datamart_name}}.t_agr_bond AS tgt
+USING (
+  SELECT * FROM source_of_truth WHERE ctl_loading = ${today}
+) AS src
+ON tgt.id = src.id
+WHEN NOT MATCHED THEN
+  INSERT *
+WHEN MATCHED AND (
+       src.attr1 <> tgt.attr1
+    OR src.attr2 <> tgt.attr2
+    OR ... -- compare every business column; null-safe operator may be needed for nullable cols
+  ) THEN UPDATE SET *
+WHEN NOT MATCHED BY SOURCE THEN
+  DELETE;
+```
+
+Requires `format-version=2` and (for low-latency) `write.merge.mode=merge-on-read`. See [reference.md § Post-Migration Operational Concerns](#post-migration-operational-concerns).
+
+**(b) Emit change events for downstream → `table.changes` (changelog scan):**
+
+```sql
+-- Read the changelog produced by writes between two snapshots:
+SELECT _change_type, _change_ordinal, _commit_snapshot_id, *
+FROM {{datamart_name}}.t_agr_bond.changes
+FOR SYSTEM_VERSION AS OF FROM (snapshot_yesterday) TO (snapshot_today)
+ORDER BY _change_ordinal;
+```
+
+`_change_type` values: `INSERT`, `DELETE`, `UPDATE_BEFORE`, `UPDATE_AFTER`. An update produces two rows (BEFORE + AFTER) with the same `_change_ordinal`. No diff query needed — Iceberg tracks this at the metadata layer.
+
+**Caveats:**
+- `MERGE` requires unique keys on the join condition; if `id` is not unique in the source you must dedupe in the `USING` subquery.
+- Comparing nullable columns with `<>` returns `NULL` (treated as false). Use `IS DISTINCT FROM` or `NVL`-pad to detect changes correctly.
+- `table.changes` is meaningful only AFTER the table is written via MERGE / append / overwrite from the source — it does not retro-fill history. Plan a one-time backfill if downstream needs historical change events.
+- If the target has retention shorter than the downstream consumer's lag, `changes` will gap. Tune `expire_snapshots` accordingly (see [ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md)).
+
+### Pattern 2: Manual tombstone columns
+
+**Before:** Tables carry an `is_deleted BOOLEAN` or `deleted_at TIMESTAMP` column because Parquet has no row-level delete; downstream filters add `WHERE NOT is_deleted` to every query.
+
+**After:** Drop the tombstone column. Use ordinary `DELETE FROM tgt WHERE ...` against the Iceberg table. Set `format-version=2` and `write.delete.mode=merge-on-read` so deletes are cheap.
+
+**Caveat:** Existing downstream queries that filter on `is_deleted` need to be rewritten — this is breakage, not just an internal change. Propose the alternative to the user; do not silently drop the column.
+
+### Pattern 3: Full-partition rewrite for late-arriving data
+
+**Before:** Late-arriving rows for `part_dt='2026-04-15'` arrive on `2026-05-01`. The Parquet pipeline rewrites the entire `part_dt='2026-04-15'` partition (read all, append new, write back) because there is no row-level update.
+
+**After:** `MERGE INTO ... ON tgt.id = src.id AND tgt.part_dt = src.part_dt` — Iceberg writes only the affected data files within that partition; the rest of the partition is untouched.
+
+### Pattern 4: Custom CDC / changelog tables
+
+**Before:** A `t_<x>_changelog` table populated by triggers / batch scripts to record what changed in the main table, used for CDC to Kafka.
+
+**After:** The main Iceberg table itself IS the CDC source via `table.changes`. Retire the changelog table and rewrite the Kafka emitter to read from `.changes`.
+
+### Detection cheat-sheet
+
+The migrator (or the agent at audit time) should flag for review:
+
+| Signal | Likely pattern |
+|---|---|
+| SQL file named `*_inc.sql`, `*_diff*.sql`, `*_delta*.sql`, `*_changes*.sql` | Pattern 1 (increment via diff) |
+| `FULL OUTER JOIN ... ON .id = .id` between two filtered slices of the same table | Pattern 1 |
+| `LEFT JOIN ... WHERE rhs.id IS NULL` between two snapshots | Pattern 1 (insert detection half) |
+| `EXCEPT` / `MINUS` between filtered slices of the same source | Pattern 1 |
+| `WITH today AS (...), yesterday AS (...)` CTE structure | Pattern 1 |
+| Column named `is_deleted` / `deleted_at` / `tombstone` / `is_active`+`valid_to` | Pattern 2 |
+| Repeated full-partition `INSERT OVERWRITE TABLE t PARTITION (part_dt=...)` for the same partition | Pattern 3 |
+| Table name ending `_changelog` / `_cdc` / `_history` with a foreign key to the main table | Pattern 4 |
+
+These are **signals**, not rules. A `_inc.sql` may legitimately compute a metric increment, not a row-level diff. Surface the finding to the user and confirm intent before proposing the rewrite.
+
 ## Known Limitations
 
 - **FQN propagation on read sites** — after rewriting `saveAsTable("Foo")` → `writeTo("ns.Foo")`, every downstream reference to the bare name (`spark.table("Foo")`, `CACHE TABLE Foo`, `SELECT ... FROM Foo`, `DROP TABLE Foo`) must be updated to the fully-qualified `ns.Foo`. Otherwise those calls resolve through the default session catalog and miss the Iceberg table entirely. The detector reports these reads, but the worklist does not automatically bind them to the write-site rewrite — walk each `spark_read_table` / SparkSQL match in the same file and rename by hand.

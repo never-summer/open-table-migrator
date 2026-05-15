@@ -48,6 +48,28 @@ The full Spark conf block from `ICEBERG_WF_GUIDE.md` "Spark-конфигурац
 
 Confirm in your announce that both guides were read AND that you will propagate the three Iceberg conf flags into every affected wf.
 
+### ⚠ MANDATORY — analyze the pipeline, propose Iceberg-native alternatives (do NOT translate 1:1)
+
+The skill rewrites individual call sites. But Iceberg unlocks pipeline-level simplifications that Parquet does not. **Before producing the worklist, scan the project for the patterns below and surface a concrete proposal to the user** rather than mechanically translating existing parquet-era SQL.
+
+| Anti-pattern in the Parquet pipeline | Iceberg-native replacement | Why |
+|---|---|---|
+| Custom "increment" SQL (`*_inc.sql`, `*_diff*.sql`, `*_changes*.sql`, `*_delta*.sql`) joining today's snapshot with yesterday's to detect inserts / updates / deletes | `MERGE INTO target USING source ON ...`<br>`WHEN NOT MATCHED THEN INSERT *`<br>`WHEN MATCHED AND (src.attr <> tgt.attr OR ...) THEN UPDATE SET *`<br>`WHEN NOT MATCHED BY SOURCE THEN DELETE` | One statement does insert/update/delete atomically; no manual full-outer-join, no snapshot CTEs. |
+| Reading "current" + "previous" snapshot and diffing them to emit change events downstream | `SELECT _change_type, * FROM target.changes` (Iceberg changelog scan) | `_change_type` is `INSERT`/`DELETE`/`UPDATE_BEFORE`/`UPDATE_AFTER` — Iceberg tracks this at the metadata layer, no diff query needed. |
+| Manual tombstone columns (`is_deleted`, `deleted_at`) used because parquet has no row-level delete | MoR + `format-version=2` + `write.delete.mode=merge-on-read` + ordinary `DELETE FROM` | Iceberg deletes rows natively (position/equality deletes); the tombstone column becomes redundant. |
+| Full-partition rewrite for late-arriving data | `MERGE INTO ... ON tgt.part_dt BETWEEN ... AND ...` (partition-aware MERGE) | Iceberg writes only affected files; old data files remain. |
+
+**Detection signals:** SQL files named `*_inc.sql` / `*_diff*` / `*_changes*` / `*_delta*`, `FULL OUTER JOIN` / `LEFT JOIN ... WHERE x.id IS NULL` between two snapshots of the same logical table, `EXCEPT` / `MINUS` between filtered slices of the same source, or `WITH today AS (...), yesterday AS (...)` CTE pattern.
+
+**Workflow:**
+1. List each detected anti-pattern with file:line + the canonical replacement.
+2. Ask the user to confirm before rewriting — they may have business reasons to keep the explicit increment logic (audit trail, downstream contract).
+3. If the user accepts the MERGE-based rewrite, also propose retiring the now-redundant `*_inc.sql` and its `wf_*_inc` workflow entry — they would otherwise keep computing diffs against a table whose history is already in `.changes`.
+
+Full pattern catalogue with before/after SQL examples: [reference.md § Iceberg-native pipeline optimizations](./reference.md#iceberg-native-pipeline-optimizations).
+
+Confirm in your announce that you will run this pipeline analysis pass and surface findings to the user.
+
 ## What This Skill Does
 
 Scans the project for Parquet and ORC operations (Hive DDL, Spark Dataset API, generic `format(...)` calls) and replaces them with Apache Iceberg equivalents:
