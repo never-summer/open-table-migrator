@@ -7,6 +7,29 @@ description: Convert Parquet/ORC read/write to Apache Iceberg in Python, Java, o
 
 **Announce at start:** "I'm using the open-table-migrator skill to convert this project."
 
+## ⚠ MANDATORY — read these two guides before doing anything
+
+**Before Step 1, you MUST read both of these files. They ship with this skill — same directory as this `SKILL.md`. They override every default below when they conflict, and ignoring them will produce a broken migration.**
+
+- 📖 **[S2T_GUIDE.md](./S2T_GUIDE.md)** — Spec-to-Test spec system used in OpenFlow / Sberbank `custom_blago_dzo_*` projects. Authoritative for:
+  - Table specs (sheets `Tables`, `Columns`, `Partitions`, `Indexes`, `Constraints` in `s2t.xlsx` / `hadoop_S2T_*.xlsx`)
+  - Column metadata (names, types, nullability, descriptions)
+  - DDL is **generated** from S2T, not from existing parquet. Pull schema from `src/main/resources/s2t/s2t.xlsx` (or `hadoop_S2T_<PROJECT>_v<n>.xlsx`), not from `pq.read_schema`.
+  - Gherkin feature files (`ift.feature`, `st_skl.feature`) under `src/main/resources/s2t/qaapi/` must be updated with the new table scenarios. ТУЗ (`u_<id>`), очередь yarn, `datamart_name`, `entity_id` come from S2T + `devops.json` + `1_ctl_entities.yml`.
+
+- 📖 **[ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md)** — Oozie-based `wf/ctl/*.yml` workflow system. Authoritative for:
+  - Required Spark conf for Iceberg (`spark.sql.extensions=...IcebergSparkSessionExtensions`, `spark_catalog.type=hive`, `rewrite.partial-progress.enabled=true`, etc.) — see "Spark-конфигурация для Iceberg" section.
+  - Compaction / expire_snapshots / remove_orphan_files run via `wf_schema_hdfs_care` workflow, NOT via standalone Spark jobs. Every new Iceberg table needs `exp_iceberg_<table>.sql` and `upd_iceberg_<table>.sql` scripts under `src/main/resources/sql/dml/`.
+  - Lock operations through CTL (`init_locks: checks/sets`, `*ctlCheckLockWrite`, `*ctlSetLockRead`).
+  - Data-flow layers: `Sources → AUX (Parquet) → HIST (Iceberg) → AL (Iceberg)`. Read this section before deciding what to migrate vs. leave as parquet.
+
+**If a recommendation in this `SKILL.md`, `examples.md`, `reference.md`, or generated `iceberg-runbook/` contradicts these guides, the guides win.** Specifically:
+- Phase 2 in the phased runbook prescribes `CALL system.rewrite_data_files(...)` as a standalone call — in OpenFlow projects, this MUST be wired through `wf_schema_hdfs_care` per `ICEBERG_WF_GUIDE.md` "Сценарий 1/2".
+- Step 3 "Ask the User for Iceberg Table Details" is **skipped** — the answer comes from `S2T_GUIDE.md` + the project's S2T Excel file.
+- Step 6 "Create the Iceberg Table" — schema comes from S2T Excel, `TBLPROPERTIES` come from `ICEBERG_WF_GUIDE.md`, NOT from inference or interactive prompt.
+
+Confirm in your announce that both guides were read.
+
 ## What This Skill Does
 
 Scans the project for Parquet and ORC operations (Hive DDL, Spark Dataset API, generic `format(...)` calls) and replaces them with Apache Iceberg equivalents:
@@ -21,17 +44,11 @@ Also updates project dependencies (`requirements.txt`, `pyproject.toml`, `pom.xm
 For the full before/after rewrite matrix per language and the multi-table mapping format, see [examples.md](./examples.md).
 For subsystem deep-dives (path schemes, constant folding, partition spec extraction, dynamic SQL loading, dry-run, phased runbook, operational concerns, known limitations) see [reference.md](./reference.md).
 
-## Project-specific guides
+## Additional project-specific guides (optional)
 
-**Before Step 3 (table details) and before Step 6 (table creation), look for these files at the project root and read whichever exist:**
+`S2T_GUIDE.md` and `ICEBERG_WF_GUIDE.md` listed above are **mandatory** — they ship with this skill and always apply.
 
-- **`S2T_GUIDE.md`** — source-to-target mapping. Authoritative for table specs, namespace, column metadata (names, types, nullability, descriptions), partition keys, and row-level rules. **If this file exists, prefer it over asking the user for table details in Step 3.** Use it to construct the Iceberg schema in Step 6 instead of inferring from existing Parquet.
-
-- **`ICEBERG_WF_GUIDE.md`** — workflow architecture (Oozie or successor), MoR vs CoW choice, runtime parameters, existing pipeline launches and how the migrated tables plug into them. **Read this before Step 6** to set the right `TBLPROPERTIES` (`write.delete.mode`, `write.update.mode`, `format-version`) and **before the runbook is consumed** to align Phase 2 compaction schedule with existing batch windows.
-
-- **Any other `*_GUIDE.md` at project root** — read it; project owners use this naming convention for migration-relevant context. If a guide contradicts SKILL.md defaults, **the guide wins** (it reflects local constraints).
-
-If none of these files exist, fall back to the interactive Step 3 questions and defaults below.
+Beyond them, **also look for any `*_GUIDE.md` files at the project root of the project being migrated** — project owners use this naming convention for migration-relevant context. If such a guide contradicts SKILL.md defaults (and does not contradict the two mandatory skill guides), the project guide wins.
 
 ## Step-by-Step Process
 
@@ -72,15 +89,19 @@ Read source files and identify patterns. The skill scans for **both Parquet and 
 
 For each detected pattern, refer to [examples.md](./examples.md) for the Iceberg equivalent.
 
-### 3. Ask the User for Iceberg Table Details
+### 3. Get table details from S2T (skip the interactive prompt)
 
-**First check whether `S2T_GUIDE.md` exists at the project root — if so, use it as the source of truth and skip these questions.**
+**Per the mandatory [S2T_GUIDE.md](./S2T_GUIDE.md), table details come from S2T, NOT from asking the user.** Concrete steps:
 
-Otherwise, ask:
-- **Table name** — what should the Iceberg table be called?
-- **Namespace** — default namespace is `"default"`
-- **Catalog type** — local SQLite (dev), Hive Metastore, AWS Glue, REST?
-- **For JVM projects:** does the target Spark cluster already have `iceberg-spark-runtime` on the classpath, or should we add it?
+1. Locate `s2t.xlsx` (or `hadoop_S2T_<PROJECT>_v<n>.xlsx`) under `<project>/src/main/resources/s2t/`.
+2. Read sheets `Tables` (name, description, storage, location), `Columns` (name, type, nullability, description), `Partitions` (partition column + type).
+3. The target Iceberg `(namespace, table)` = `(datamart_name from devops.json, table name from S2T)`. Storage column in S2T flips from `HIVE`/parquet to Iceberg.
+4. Capture `entity_id` per table from `src/main/resources/wf/ctl/1_ctl_entities.yml`. You will need it in Step 6 and in the wf yaml.
+5. Capture `ТУЗ` (yarn user, `u_<id>`) and `очередь ярн` (`root.g_<...>`) from `mart.yml` / `devops.json`. These go into the Gherkin scenario in `qaapi/*.feature`.
+
+Catalog config comes from [ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md) "Spark-конфигурация для Iceberg" — use `spark_catalog` with `type=hive`. Do NOT propose SQLite or REST — those are out of OpenFlow scope.
+
+Only ask the user when S2T is missing, ambiguous, or when a table is not yet declared in S2T (in which case add it to S2T first per S2T_GUIDE "Как добавить новую таблицу в S2T" before continuing).
 
 ### 4. Generate the Worklist, Then Rewrite
 
@@ -123,35 +144,41 @@ For other known caveats (FQN propagation, streaming, pyarrow dataset, viewfs, et
 
 ### 6. Create the Iceberg Table
 
-**First check `S2T_GUIDE.md` for column metadata and `ICEBERG_WF_GUIDE.md` for `TBLPROPERTIES` (MoR vs CoW, format-version).** If they exist, use them. Otherwise:
+**Schema is generated from S2T Excel (per S2T_GUIDE.md), TBLPROPERTIES come from ICEBERG_WF_GUIDE.md, catalog is `spark_catalog` with `type=hive`. Do not invent schemas or properties.**
 
-**Python (pyiceberg):**
-```python
-from pyiceberg.catalog import load_catalog
-from pyiceberg.schema import Schema
-from pyiceberg.types import NestedField, LongType, StringType, DoubleType
+Concrete:
 
-catalog = load_catalog("default", **{"type": "sql", "uri": "sqlite:///iceberg.db"})
-schema = Schema(
-    NestedField(1, "id", LongType(), required=True),
-    NestedField(2, "status", StringType()),
-    NestedField(3, "value", DoubleType()),
-)
-catalog.create_table("default.events", schema=schema)
-```
+1. Generate / regenerate DDL from `s2t.xlsx` per S2T_GUIDE "Контрольный список перед запуском" (the DDL generator step that turns S2T into `src/main/resources/sql/ddl/<layer>/<table>.sql`). Then change `STORED AS PARQUET` → `USING iceberg`.
 
-**Java/Scala (Spark SQL):**
 ```sql
-CREATE TABLE default.events (
-  id BIGINT NOT NULL,
-  status STRING,
-  value DOUBLE
-) USING iceberg
+CREATE TABLE {{datamart_name}}.<table> (
+  -- columns FROM S2T sheet `Columns` — types/nullability AS-IS from S2T
+)
+USING iceberg
+PARTITIONED BY (
+  -- FROM S2T sheet `Partitions` — typically (ctl_loading INT) or part_report_dt
+)
+TBLPROPERTIES (
+  'format-version' = '2',
+  'write.parquet.compression-codec' = 'zstd'
+  -- MoR vs CoW: ICEBERG_WF_GUIDE does not prescribe a default per table.
+  -- Add 'write.update.mode' / 'write.delete.mode' / 'write.merge.mode' = 'merge-on-read'
+  -- only when the table has row-level UPDATE/DELETE/MERGE — confirm from DML scripts under
+  -- src/main/resources/sql/dml/ before setting these.
+);
 ```
 
-For the operational dimension of Step 6 (Copy-on-Write vs Merge-on-Read, compaction, snapshot expiration), see "Post-Migration Operational Concerns" in [reference.md](./reference.md).
+2. Wire the table into compaction per [ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md) — this is **not optional**:
+   - Create `src/main/resources/sql/dml/exp_iceberg_<table>.sql` (expire_snapshots) — template in ICEBERG_WF_GUIDE "Expire snapshots only".
+   - Create `src/main/resources/sql/dml/upd_iceberg_<table>.sql` (full cycle) — template in ICEBERG_WF_GUIDE "Полный цикл обслуживания".
+   - Add the two `spark_driver_extraJavaOptions__hdfs_care_*` params for the table to existing `wf_schema_hdfs_care` in `src/main/resources/wf/ctl/ctl.yml`. If `wf_schema_hdfs_care` does not exist for the project, follow "Сценарий 2: Создай отдельный wf для таблицы".
+   - Use `entity_id` captured in Step 3.
 
-For the phased operational rollout (Phase 1 `add_files`, Phase 2 `rewrite_data_files`, Phase 3 switchover) emitted as `iceberg-runbook/`, see "Phased migration runbook" in [reference.md](./reference.md).
+3. Update the Gherkin scenario (`ift.feature` / `st_skl.feature`) per S2T_GUIDE "Шаг 4: Добавь сценарий в Gherkin-файл" — add the new table to the DDL check sub-scenarios.
+
+The `iceberg-runbook/<ns>.<table>/phase2_rewrite.sql` emitted by the migrator is a **template** — in OpenFlow projects, replace it with the `wf_schema_hdfs_care` wiring above. Phase 1 (`add_files`) and Phase 3 (switchover) still apply.
+
+For the rest of the phased rollout (Phase 1 `add_files`, Phase 3 switchover options) and operational background (MoR/CoW, snapshot expiration), see [reference.md](./reference.md) sections "Phased migration runbook" and "Post-Migration Operational Concerns" — but read them through the lens of ICEBERG_WF_GUIDE.md (wf/ctl wiring, not standalone Spark jobs).
 
 ### 7. Run Existing Tests
 
