@@ -79,7 +79,7 @@ PYTHONPATH=. python -m skills.open_table_migrator.cli path/to/project \
     --mapping ./lakehouse-mapping.json
 ```
 
-Mapping format — see [SKILL.md](skills/open_table_migrator/SKILL.md#multi-table-projects).
+Mapping format — see [examples.md](skills/open_table_migrator/examples.md#multi-table-projects).
 
 ---
 
@@ -180,7 +180,7 @@ The regex detector is preserved in the `regex-detector` branch.
 - JVM coordinates: Spark 3.5 + Scala 2.12
 - `partitionBy(...)` in JVM → TODO for manual Iceberg partition spec
 
-Full list — in [SKILL.md § Known Limitations](skills/open_table_migrator/SKILL.md#known-limitations).
+Full list — in [reference.md § Known Limitations](skills/open_table_migrator/reference.md#known-limitations).
 
 ## License
 
