@@ -1,11 +1,11 @@
 from pathlib import Path
 from textwrap import dedent
 
-from skills.open_table_migrator.detector import (
+from skills.open_table_migrator.scripts.detector import (
     PartitionTransform, PatternMatch, detect_all_io,
 )
-from skills.open_table_migrator.targets import Target, constant_resolver
-from skills.open_table_migrator.worklist import build_worklist
+from skills.open_table_migrator.scripts.targets import Target, constant_resolver
+from skills.open_table_migrator.scripts.worklist import build_worklist
 
 
 def test_write_entry_serializes_partition_spec(tmp_path):
@@ -44,11 +44,11 @@ def test_write_entry_without_partition_omits_field(tmp_path):
 def test_serialize_worklist_returns_valid_json_no_disk_write(tmp_path):
     """serialize_worklist produces the JSON string without writing to disk."""
     import json
-    from skills.open_table_migrator.targets import Target, constant_resolver
-    from skills.open_table_migrator.worklist import (
+    from skills.open_table_migrator.scripts.targets import Target, constant_resolver
+    from skills.open_table_migrator.scripts.worklist import (
         build_worklist, serialize_worklist,
     )
-    from skills.open_table_migrator.detector import detect_all_io
+    from skills.open_table_migrator.scripts.detector import detect_all_io
 
     (tmp_path / "job.py").write_text(
         'import pandas as pd\n'
@@ -72,16 +72,16 @@ def test_serialize_worklist_returns_valid_json_no_disk_write(tmp_path):
 def test_serialize_worklist_with_dyn_cross_includes_loaders_key(tmp_path):
     """serialize_worklist with dyn_cross adds dynamic_sql_loaders key."""
     import json
-    from skills.open_table_migrator.targets import Target, constant_resolver
-    from skills.open_table_migrator.worklist import (
+    from skills.open_table_migrator.scripts.targets import Target, constant_resolver
+    from skills.open_table_migrator.scripts.worklist import (
         build_worklist, serialize_worklist,
     )
-    from skills.open_table_migrator.detector import detect_all_io
-    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
-    from skills.open_table_migrator.sql_registry import (
+    from skills.open_table_migrator.scripts.detector import detect_all_io
+    from skills.open_table_migrator.scripts.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.scripts.sql_registry import (
         scan_sql_files, scan_sql_table_references,
     )
-    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.scripts.analyzer import cross_reference_dynamic_sql
 
     (tmp_path / "queries").mkdir()
     (tmp_path / "queries" / "events.sql").write_text(
@@ -115,11 +115,11 @@ def test_worklist_entry_carries_partition_mismatch_attr(tmp_path):
         'df.write.partitionBy("region").saveAsTable("events")\n'
     )
 
-    from skills.open_table_migrator.detector import detect_all_io
-    from skills.open_table_migrator.sql_registry import scan_sql_files
-    from skills.open_table_migrator.analyzer import annotate_partition_mismatch
-    from skills.open_table_migrator.targets import Target, constant_resolver
-    from skills.open_table_migrator.worklist import build_worklist
+    from skills.open_table_migrator.scripts.detector import detect_all_io
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_files
+    from skills.open_table_migrator.scripts.analyzer import annotate_partition_mismatch
+    from skills.open_table_migrator.scripts.targets import Target, constant_resolver
+    from skills.open_table_migrator.scripts.worklist import build_worklist
 
     matches = detect_all_io(tmp_path)
     sql_defs = scan_sql_files(tmp_path)

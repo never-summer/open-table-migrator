@@ -3,16 +3,16 @@ import json
 import textwrap
 from pathlib import Path
 
-from skills.open_table_migrator.cli import convert_project
-from skills.open_table_migrator.detector import detect_parquet_usage
-from skills.open_table_migrator.prepass import run_prepass
-from skills.open_table_migrator.targets import (
+from skills.open_table_migrator.scripts.cli import convert_project
+from skills.open_table_migrator.scripts.detector import detect_parquet_usage
+from skills.open_table_migrator.scripts.prepass import run_prepass
+from skills.open_table_migrator.scripts.targets import (
     Mapping,
     MappingEntry,
     Target,
     build_resolver,
 )
-from skills.open_table_migrator.worklist import build_worklist, write_worklist
+from skills.open_table_migrator.scripts.worklist import build_worklist, write_worklist
 
 
 # ─── Prepass: skip markers and pyspark conf comment ──────────────────
@@ -199,7 +199,7 @@ def test_cli_hybrid_mode_runs_prepass_for_skip_markers(tmp_path: Path):
     mapping_path.write_text(json.dumps({
         "tables": [{"path_glob": "s3://legacy/*", "skip": True}],
     }))
-    from skills.open_table_migrator.targets import load_mapping
+    from skills.open_table_migrator.scripts.targets import load_mapping
     mapping = load_mapping(mapping_path)
     convert_project(proj, mapping=mapping)
     out = (proj / "etl.py").read_text()

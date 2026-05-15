@@ -55,8 +55,8 @@ Skill + субагент для Claude Code.
 ```bash
 PYTHONPATH=. python -c "
 from pathlib import Path
-from skills.open_table_migrator.detector import detect_all_io
-from skills.open_table_migrator.analyzer import build_report, format_report
+from skills.open_table_migrator import detect_all_io
+from skills.open_table_migrator import build_report, format_report
 
 matches = detect_all_io(Path('путь/к/проекту'))
 print(format_report(build_report(matches), project_root=Path('путь/к/проекту')))
@@ -66,18 +66,18 @@ print(format_report(build_report(matches), project_root=Path('путь/к/про
 Миграция одной таблицы — выдаёт `lakehouse-worklist.json`:
 
 ```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli путь/к/проекту \
+PYTHONPATH=. python -m skills.open_table_migrator путь/к/проекту \
     --table events --namespace analytics
 ```
 
 Миграция нескольких таблиц:
 
 ```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli путь/к/проекту \
+PYTHONPATH=. python -m skills.open_table_migrator путь/к/проекту \
     --mapping ./iceberg-mapping.json
 ```
 
-Формат маппинга — в [SKILL.md](skills/open_table_migrator/SKILL.md#multi-table-projects).
+Формат маппинга — в [examples.md](skills/open_table_migrator/examples.md#multi-table-projects).
 
 ---
 
@@ -178,7 +178,7 @@ Regex-детектор сохранён в ветке `regex-detector`.
 - JVM-координаты: Spark 3.5 + Scala 2.12
 - `partitionBy(...)` в JVM → TODO для ручного добавления в Iceberg partition spec
 
-Полный список — в [SKILL.md § Known Limitations](skills/open_table_migrator/SKILL.md#known-limitations).
+Полный список — в [reference.md § Known Limitations](skills/open_table_migrator/reference.md#known-limitations).
 
 ---
 

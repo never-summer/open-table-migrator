@@ -1,6 +1,6 @@
 import textwrap
 from pathlib import Path
-from skills.open_table_migrator.detector import detect_parquet_usage, PatternMatch
+from skills.open_table_migrator.scripts.detector import detect_parquet_usage, PatternMatch
 
 
 def write_file(tmp_path: Path, name: str, content: str) -> Path:
@@ -150,7 +150,7 @@ def test_python_module_const_resolves_in_read_parquet(tmp_path: Path):
         EVENTS_PATH = "s3://bucket/events"
         df = pd.read_parquet(EVENTS_PATH)
     '''))
-    from skills.open_table_migrator.detector import detect_all_io
+    from skills.open_table_migrator.scripts.detector import detect_all_io
     matches = detect_all_io(tmp_path)
     assert len(matches) >= 1
     pq_match = [m for m in matches if "parquet" in m.pattern_type]
@@ -168,7 +168,7 @@ def test_python_function_local_const_resolves(tmp_path: Path):
             path = "s3://bucket/users"
             df = pd.read_parquet(path)
     '''))
-    from skills.open_table_migrator.detector import detect_all_io
+    from skills.open_table_migrator.scripts.detector import detect_all_io
     matches = detect_all_io(tmp_path)
     pq_match = [m for m in matches if "parquet" in m.pattern_type]
     assert len(pq_match) == 1
@@ -182,7 +182,7 @@ def test_python_reassigned_skipped(tmp_path: Path):
         PATH = "s3://b"
         df = pd.read_parquet(PATH)
     '''))
-    from skills.open_table_migrator.detector import detect_all_io
+    from skills.open_table_migrator.scripts.detector import detect_all_io
     matches = detect_all_io(tmp_path)
     pq_match = [m for m in matches if "parquet" in m.pattern_type]
     assert len(pq_match) == 1
@@ -200,7 +200,7 @@ def test_java_static_final_resolves(tmp_path: Path):
             }
         }
     '''))
-    from skills.open_table_migrator.detector import detect_all_io
+    from skills.open_table_migrator.scripts.detector import detect_all_io
     matches = detect_all_io(tmp_path)
     assert any(m.path_arg == "s3://bucket/events" for m in matches)
 
@@ -214,7 +214,7 @@ def test_scala_val_resolves(tmp_path: Path):
             }
         }
     '''))
-    from skills.open_table_migrator.detector import detect_all_io
+    from skills.open_table_migrator.scripts.detector import detect_all_io
     matches = detect_all_io(tmp_path)
     assert any(m.path_arg == "s3://bucket/events" for m in matches)
 
@@ -224,7 +224,7 @@ def test_python_unresolved_identifier_keeps_none(tmp_path: Path):
         import pandas as pd
         df = pd.read_parquet(SOME_UNDEFINED_PATH)
     '''))
-    from skills.open_table_migrator.detector import detect_all_io
+    from skills.open_table_migrator.scripts.detector import detect_all_io
     matches = detect_all_io(tmp_path)
     pq_match = [m for m in matches if "parquet" in m.pattern_type]
     assert len(pq_match) == 1

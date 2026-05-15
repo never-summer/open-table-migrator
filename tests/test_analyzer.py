@@ -1,6 +1,6 @@
 from pathlib import Path
-from skills.open_table_migrator.analyzer import build_report, format_report, direction_of, is_migration_candidate
-from skills.open_table_migrator.detector import PatternMatch
+from skills.open_table_migrator.scripts.analyzer import build_report, format_report, direction_of, is_migration_candidate
+from skills.open_table_migrator.scripts.detector import PatternMatch
 
 
 def _match(file: str, pattern: str, line: int = 1) -> PatternMatch:
@@ -107,9 +107,9 @@ def test_partition_mismatch_when_code_and_ddl_differ(tmp_path):
     (tmp_path / "job.py").write_text(
         'df.write.partitionBy("region").saveAsTable("events")\n'
     )
-    from skills.open_table_migrator.detector import detect_all_io
-    from skills.open_table_migrator.sql_registry import scan_sql_files
-    from skills.open_table_migrator.analyzer import annotate_partition_mismatch
+    from skills.open_table_migrator.scripts.detector import detect_all_io
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_files
+    from skills.open_table_migrator.scripts.analyzer import annotate_partition_mismatch
 
     matches = detect_all_io(tmp_path)
     defs = scan_sql_files(tmp_path)
@@ -130,9 +130,9 @@ def test_no_partition_mismatch_when_code_and_ddl_agree(tmp_path):
     (tmp_path / "job.py").write_text(
         'df.write.partitionBy("region").saveAsTable("events")\n'
     )
-    from skills.open_table_migrator.detector import detect_all_io
-    from skills.open_table_migrator.sql_registry import scan_sql_files
-    from skills.open_table_migrator.analyzer import annotate_partition_mismatch
+    from skills.open_table_migrator.scripts.detector import detect_all_io
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_files
+    from skills.open_table_migrator.scripts.analyzer import annotate_partition_mismatch
 
     matches = detect_all_io(tmp_path)
     defs = scan_sql_files(tmp_path)
@@ -155,9 +155,9 @@ def test_partition_mismatch_when_order_differs(tmp_path):
     (tmp_path / "job.py").write_text(
         'df.write.partitionBy("region", "date_col").saveAsTable("events")\n'
     )
-    from skills.open_table_migrator.detector import detect_all_io
-    from skills.open_table_migrator.sql_registry import scan_sql_files
-    from skills.open_table_migrator.analyzer import annotate_partition_mismatch
+    from skills.open_table_migrator.scripts.detector import detect_all_io
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_files
+    from skills.open_table_migrator.scripts.analyzer import annotate_partition_mismatch
 
     matches = detect_all_io(tmp_path)
     defs = scan_sql_files(tmp_path)
@@ -178,9 +178,9 @@ def test_cross_reference_dynamic_sql_with_create_in_same_file(tmp_path):
         'sql = open("queries/events.sql").read()\n'
     )
 
-    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
-    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
-    from skills.open_table_migrator.sql_registry import (
+    from skills.open_table_migrator.scripts.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.scripts.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.scripts.sql_registry import (
         scan_sql_files, scan_sql_table_references,
     )
 
@@ -207,9 +207,9 @@ def test_cross_reference_dynamic_sql_create_in_different_file(tmp_path):
         'sql = open("queries/events_update.sql").read()\n'
     )
 
-    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
-    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
-    from skills.open_table_migrator.sql_registry import (
+    from skills.open_table_migrator.scripts.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.scripts.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.scripts.sql_registry import (
         scan_sql_files, scan_sql_table_references,
     )
 
@@ -227,9 +227,9 @@ def test_cross_reference_dynamic_sql_loader_with_no_registry_match(tmp_path):
     (tmp_path / "job.py").write_text(
         'sql = open("queries/missing.sql").read()\n'
     )
-    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
-    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
-    from skills.open_table_migrator.sql_registry import (
+    from skills.open_table_migrator.scripts.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.scripts.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.scripts.sql_registry import (
         scan_sql_files, scan_sql_table_references,
     )
 
@@ -252,9 +252,9 @@ def test_cross_reference_dynamic_sql_basename_unique(tmp_path):
         'sql = open("events.sql").read()\n'
     )
 
-    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
-    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
-    from skills.open_table_migrator.sql_registry import (
+    from skills.open_table_migrator.scripts.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.scripts.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.scripts.sql_registry import (
         scan_sql_files, scan_sql_table_references,
     )
 
@@ -278,9 +278,9 @@ def test_cross_reference_dynamic_sql_resolved_to_is_relative_on_macos(tmp_path):
         'sql = open("queries/events.sql").read()\n'
     )
 
-    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
-    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
-    from skills.open_table_migrator.sql_registry import (
+    from skills.open_table_migrator.scripts.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.scripts.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.scripts.sql_registry import (
         scan_sql_files, scan_sql_table_references,
     )
 
@@ -324,12 +324,12 @@ def test_worklist_resolved_to_is_relative_on_symlinked_tmp(tmp_path):
         'sql = open("queries/events.sql").read()\n'
     )
 
-    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
-    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
-    from skills.open_table_migrator.sql_registry import (
+    from skills.open_table_migrator.scripts.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.scripts.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.scripts.sql_registry import (
         scan_sql_files, scan_sql_table_references,
     )
-    from skills.open_table_migrator.worklist import write_worklist
+    from skills.open_table_migrator.scripts.worklist import write_worklist
 
     # Pass the SYMLINK path as project_root — this is the macOS scenario
     # where the user references /tmp/... but .resolve() returns /private/tmp/...
@@ -365,9 +365,9 @@ def test_cross_reference_dynamic_sql_emits_empty_tables_when_no_parquet(tmp_path
         'sql = open("queries/csv_export.sql").read()\n'
     )
 
-    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
-    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
-    from skills.open_table_migrator.sql_registry import (
+    from skills.open_table_migrator.scripts.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.scripts.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.scripts.sql_registry import (
         scan_sql_files, scan_sql_table_references,
     )
 
@@ -396,9 +396,9 @@ def test_cross_reference_dynamic_sql_basename_ambiguous(tmp_path):
         'sql = open("events.sql").read()\n'
     )
 
-    from skills.open_table_migrator.analyzer import cross_reference_dynamic_sql
-    from skills.open_table_migrator.dynamic_sql import detect_dynamic_sql_loaders
-    from skills.open_table_migrator.sql_registry import (
+    from skills.open_table_migrator.scripts.analyzer import cross_reference_dynamic_sql
+    from skills.open_table_migrator.scripts.dynamic_sql import detect_dynamic_sql_loaders
+    from skills.open_table_migrator.scripts.sql_registry import (
         scan_sql_files, scan_sql_table_references,
     )
 

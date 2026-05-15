@@ -1,6 +1,6 @@
 # tests/test_ts_parser.py
 from pathlib import Path
-from skills.open_table_migrator.ts_parser import parse, language_for_file
+from skills.open_table_migrator.scripts.ts_parser import parse, language_for_file
 
 
 def test_language_for_py():

@@ -1,4 +1,4 @@
-from skills.open_table_migrator.scope import (
+from skills.open_table_migrator.scripts.scope import (
     ConstBinding, ConstTable, build_const_table,
 )
 

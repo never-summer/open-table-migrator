@@ -1,12 +1,74 @@
 ---
 name: open-table-migrator
-description: Converts a Python or Java/Scala project from Parquet/ORC (including Hive and generic format() idioms) read/write to Apache Iceberg tables
-trigger: "convert parquet" OR "migrate to iceberg" OR "parquet to iceberg" OR "migrate hive to iceberg" OR "convert orc" OR "migrate orc to iceberg"
+description: Convert Parquet/ORC read/write to Apache Iceberg in Python, Java, or Scala projects. Use when the user says "convert parquet", "migrate to iceberg", "parquet to iceberg", "migrate hive to iceberg", "convert orc", "migrate orc to iceberg", or asks to move Hive-parquet tables to Iceberg.
 ---
 
 # Parquet/ORC → Iceberg Conversion Skill
 
 **Announce at start:** "I'm using the open-table-migrator skill to convert this project."
+
+## ⚠ MANDATORY — read these two guides before doing anything
+
+**Before Step 1, you MUST read both of these files. They ship with this skill — same directory as this `SKILL.md`. They override every default below when they conflict, and ignoring them will produce a broken migration.**
+
+- 📖 **[S2T_GUIDE.md](./S2T_GUIDE.md)** — Spec-to-Test spec system used in OpenFlow / Sberbank `custom_blago_dzo_*` projects. Authoritative for:
+  - Table specs (sheets `Tables`, `Columns`, `Partitions`, `Indexes`, `Constraints` in `s2t.xlsx` / `hadoop_S2T_*.xlsx`)
+  - Column metadata (names, types, nullability, descriptions)
+  - DDL is **generated** from S2T, not from existing parquet. Pull schema from `src/main/resources/s2t/s2t.xlsx` (or `hadoop_S2T_<PROJECT>_v<n>.xlsx`), not from `pq.read_schema`.
+  - Gherkin feature files (`ift.feature`, `st_skl.feature`) under `src/main/resources/s2t/qaapi/` must be updated with the new table scenarios. ТУЗ (`u_<id>`), очередь yarn, `datamart_name`, `entity_id` come from S2T + `devops.json` + `1_ctl_entities.yml`.
+
+- 📖 **[ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md)** — Oozie-based `wf/ctl/*.yml` workflow system. Authoritative for:
+  - Required Spark conf for Iceberg (`spark.sql.extensions=...IcebergSparkSessionExtensions`, `spark_catalog.type=hive`, `rewrite.partial-progress.enabled=true`, etc.) — see "Spark-конфигурация для Iceberg" section.
+  - Compaction / expire_snapshots / remove_orphan_files run via `wf_schema_hdfs_care` workflow, NOT via standalone Spark jobs. Every new Iceberg table needs `exp_iceberg_<table>.sql` and `upd_iceberg_<table>.sql` scripts under `src/main/resources/sql/dml/`.
+  - Lock operations through CTL (`init_locks: checks/sets`, `*ctlCheckLockWrite`, `*ctlSetLockRead`).
+  - Data-flow layers: `Sources → AUX (Parquet) → HIST (Iceberg) → AL (Iceberg)`. Read this section before deciding what to migrate vs. leave as parquet.
+
+**If a recommendation in this `SKILL.md`, `examples.md`, `reference.md`, or generated `iceberg-runbook/` contradicts these guides, the guides win.** Specifically:
+- Phase 2 in the phased runbook prescribes `CALL system.rewrite_data_files(...)` as a standalone call — in OpenFlow projects, this MUST be wired through `wf_schema_hdfs_care` per `ICEBERG_WF_GUIDE.md` "Сценарий 1/2".
+- Step 3 "Ask the User for Iceberg Table Details" is **skipped** — the answer comes from `S2T_GUIDE.md` + the project's S2T Excel file.
+- Step 6 "Create the Iceberg Table" — schema comes from S2T Excel, `TBLPROPERTIES` come from `ICEBERG_WF_GUIDE.md`, NOT from inference or interactive prompt.
+
+### ⚠ MANDATORY — Iceberg Spark conf on every wf that touches a migrated table
+
+For every workflow (`wf/ctl/*.yml`) that reads, writes, or runs any procedure (compaction, expire_snapshots, remove_orphan_files, MERGE, UPDATE, DELETE, ad-hoc spark-submit) against a migrated Iceberg table, the `spark_submit_cmd` (or the corresponding `--conf` block) **MUST include all three** of these conf flags. Adding two of three is a broken migration — the third one silently makes the catalog Hive-typed and queries fall back to the wrong code path.
+
+```
+--conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+--conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog
+--conf spark.sql.catalog.spark_catalog.type=hive
+```
+
+Where to add:
+- New `wf_<table>_service` (per-table compaction) → in `spark_submit_cmd` param. Reuse `{{mart.ssc_schema_hdfs_care}}` if it already wires these three flags; otherwise add them inline.
+- Existing wf that previously read/wrote the parquet table → patch its `spark_submit_cmd` to add these flags. **Do not leave the old wf untouched** — same wf, new table format means new conf.
+- Ad-hoc `spark-submit` in CI/CD or local runs → same three flags.
+- `iceberg-runbook/<ns>.<table>/phase1_add_files.sql` and `phase2_rewrite.sql` execution wrappers in OpenFlow projects must also carry these flags.
+
+The full Spark conf block from `ICEBERG_WF_GUIDE.md` "Spark-конфигурация для Iceberg" includes additional retry/partial-progress flags — use the full block for compaction wf, and at minimum the three flags above for any other wf that touches the table.
+
+Confirm in your announce that both guides were read AND that you will propagate the three Iceberg conf flags into every affected wf.
+
+### ⚠ MANDATORY — analyze the pipeline, propose Iceberg-native alternatives (do NOT translate 1:1)
+
+The skill rewrites individual call sites. But Iceberg unlocks pipeline-level simplifications that Parquet does not. **Before producing the worklist, scan the project for the patterns below and surface a concrete proposal to the user** rather than mechanically translating existing parquet-era SQL.
+
+| Anti-pattern in the Parquet pipeline | Iceberg-native replacement | Why |
+|---|---|---|
+| Custom "increment" SQL (`*_inc.sql`, `*_diff*.sql`, `*_changes*.sql`, `*_delta*.sql`) joining today's snapshot with yesterday's to detect inserts / updates / deletes | `MERGE INTO target USING source ON ...`<br>`WHEN NOT MATCHED THEN INSERT *`<br>`WHEN MATCHED AND (src.attr <> tgt.attr OR ...) THEN UPDATE SET *`<br>`WHEN NOT MATCHED BY SOURCE THEN DELETE` | One statement does insert/update/delete atomically; no manual full-outer-join, no snapshot CTEs. |
+| Reading "current" + "previous" snapshot and diffing them to emit change events downstream | `SELECT _change_type, * FROM target.changes` (Iceberg changelog scan) | `_change_type` is `INSERT`/`DELETE`/`UPDATE_BEFORE`/`UPDATE_AFTER` — Iceberg tracks this at the metadata layer, no diff query needed. |
+| Manual tombstone columns (`is_deleted`, `deleted_at`) used because parquet has no row-level delete | MoR + `format-version=2` + `write.delete.mode=merge-on-read` + ordinary `DELETE FROM` | Iceberg deletes rows natively (position/equality deletes); the tombstone column becomes redundant. |
+| Full-partition rewrite for late-arriving data | `MERGE INTO ... ON tgt.part_dt BETWEEN ... AND ...` (partition-aware MERGE) | Iceberg writes only affected files; old data files remain. |
+
+**Detection signals:** SQL files named `*_inc.sql` / `*_diff*` / `*_changes*` / `*_delta*`, `FULL OUTER JOIN` / `LEFT JOIN ... WHERE x.id IS NULL` between two snapshots of the same logical table, `EXCEPT` / `MINUS` between filtered slices of the same source, or `WITH today AS (...), yesterday AS (...)` CTE pattern.
+
+**Workflow:**
+1. List each detected anti-pattern with file:line + the canonical replacement.
+2. Ask the user to confirm before rewriting — they may have business reasons to keep the explicit increment logic (audit trail, downstream contract).
+3. If the user accepts the MERGE-based rewrite, also propose retiring the now-redundant `*_inc.sql` and its `wf_*_inc` workflow entry — they would otherwise keep computing diffs against a table whose history is already in `.changes`.
+
+Full pattern catalogue with before/after SQL examples: [reference.md § Iceberg-native pipeline optimizations](./reference.md#iceberg-native-pipeline-optimizations).
+
+Confirm in your announce that you will run this pipeline analysis pass and surface findings to the user.
 
 ## What This Skill Does
 
@@ -19,17 +81,14 @@ Scans the project for Parquet and ORC operations (Hive DDL, Spark Dataset API, g
 
 Also updates project dependencies (`requirements.txt`, `pyproject.toml`, `pom.xml`, `build.gradle`).
 
-## Project-specific guides
+For the full before/after rewrite matrix per language and the multi-table mapping format, see [examples.md](./examples.md).
+For subsystem deep-dives (path schemes, constant folding, partition spec extraction, dynamic SQL loading, dry-run, phased runbook, operational concerns, known limitations) see [reference.md](./reference.md).
 
-**Before Step 3 (table details) and before Step 6 (table creation), look for these files at the project root and read whichever exist:**
+## Additional project-specific guides (optional)
 
-- **`S2T_GUIDE.md`** — source-to-target mapping. Authoritative for table specs, namespace, column metadata (names, types, nullability, descriptions), partition keys, and row-level rules. **If this file exists, prefer it over asking the user for table details in Step 3.** Use it to construct the Iceberg schema in Step 6 instead of inferring from existing Parquet.
+`S2T_GUIDE.md` and `ICEBERG_WF_GUIDE.md` listed above are **mandatory** — they ship with this skill and always apply.
 
-- **`ICEBERG_WF_GUIDE.md`** — workflow architecture (Oozie or successor), MoR vs CoW choice, runtime parameters, existing pipeline launches and how the migrated tables plug into them. **Read this before Step 6** to set the right `TBLPROPERTIES` (`write.delete.mode`, `write.update.mode`, `format-version`) and **before the runbook is consumed** to align Phase 2 compaction schedule with existing batch windows.
-
-- **Any other `*_GUIDE.md` at project root** — read it; project owners use this naming convention for migration-relevant context. If a guide contradicts SKILL.md defaults, **the guide wins** (it reflects local constraints).
-
-If none of these files exist, fall back to the interactive Step 3 questions and defaults below.
+Beyond them, **also look for any `*_GUIDE.md` files at the project root of the project being migrated** — project owners use this naming convention for migration-relevant context. If such a guide contradicts SKILL.md defaults (and does not contradict the two mandatory skill guides), the project guide wins.
 
 ## Step-by-Step Process
 
@@ -68,25 +127,36 @@ Read source files and identify patterns. The skill scans for **both Parquet and 
 
 **Scala:** same as Java but with the parens-less `.read.parquet` / `.write.parquet` idiom.
 
-### 3. Ask the User for Iceberg Table Details
+For each detected pattern, refer to [examples.md](./examples.md) for the Iceberg equivalent.
 
-Before converting, ask:
-- **Table name** — what should the Iceberg table be called?
-- **Namespace** — default namespace is `"default"`
-- **Catalog type** — local SQLite (dev), Hive Metastore, AWS Glue, REST?
-- **For JVM projects:** does the target Spark cluster already have `iceberg-spark-runtime` on the classpath, or should we add it?
+### 3. Get table details from S2T (skip the interactive prompt)
+
+**Per the mandatory [S2T_GUIDE.md](./S2T_GUIDE.md), table details come from S2T, NOT from asking the user.** Concrete steps:
+
+1. Locate `s2t.xlsx` (or `hadoop_S2T_<PROJECT>_v<n>.xlsx`) under `<project>/src/main/resources/s2t/`.
+2. Read sheets `Tables` (name, description, storage, location), `Columns` (name, type, nullability, description), `Partitions` (partition column + type).
+3. The target Iceberg `(namespace, table)` = `(datamart_name from devops.json, table name from S2T)`. Storage column in S2T flips from `HIVE`/parquet to Iceberg.
+4. Capture `entity_id` per table from `src/main/resources/wf/ctl/1_ctl_entities.yml`. You will need it in Step 6 and in the wf yaml.
+5. Capture `ТУЗ` (yarn user, `u_<id>`) and `очередь ярн` (`root.g_<...>`) from `mart.yml` / `devops.json`. These go into the Gherkin scenario in `qaapi/*.feature`.
+
+Catalog config comes from [ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md) "Spark-конфигурация для Iceberg" — use `spark_catalog` with `type=hive`. Do NOT propose SQLite or REST — those are out of OpenFlow scope.
+
+Only ask the user when S2T is missing, ambiguous, or when a table is not yet declared in S2T (in which case add it to S2T first per S2T_GUIDE "Как добавить новую таблицу в S2T" before continuing).
 
 ### 4. Generate the Worklist, Then Rewrite
 
 The CLI does **not** rewrite code on its own. It runs the detector, resolves each match against the user's table mapping, updates dependency manifests, and emits `lakehouse-worklist.json` — a per-call-site task list for the agent/LLM to execute via `Edit`.
 
 ```bash
-python -m skills.open_table_migrator.cli <project_path> --table <TABLE_NAME> --namespace <NAMESPACE>
+python -m skills.open_table_migrator <project_path> --table <TABLE_NAME> --namespace <NAMESPACE>
 # or, for multi-table projects:
-python -m skills.open_table_migrator.cli <project_path> --mapping ./lakehouse-mapping.json
+python -m skills.open_table_migrator <project_path> --mapping ./lakehouse-mapping.json
 ```
 
-After the worklist is written, the agent walks each task and applies the rewrite using the Conversion Reference tables below. When all tasks are done, rerun the detector — the migrated patterns should be gone, and only `skip: true` entries or `TODO(iceberg)` markers remain.
+For the mapping file format see the "Multi-table projects" section in [examples.md](./examples.md).
+For the `--dry-run` flag (preview the worklist + diffs without writing) see the "Dry run" section in [reference.md](./reference.md).
+
+After the worklist is written, walk each task and apply the rewrite using the Conversion Reference tables in [examples.md](./examples.md). When all tasks are done, rerun the detector — the migrated patterns should be gone, and only `skip: true` entries or `TODO(iceberg)` markers remain.
 
 ### 5. Review and Fix Edge Cases
 
@@ -98,7 +168,7 @@ After automated conversion, manually review:
   import pyarrow.parquet as pq
   schema = pq.read_schema("existing.parquet")
   ```
-- **Partitioning** — partition specifications are extracted structurally from `partitionBy(...)` / `bucketBy(...)` calls and propagated into the worklist. The migration agent uses them to generate the correct Iceberg `PartitionSpec`. See the "Partition spec extraction" section for details.
+- **Partitioning** — partition specifications are extracted structurally from `partitionBy(...)` / `bucketBy(...)` calls and propagated into the worklist. See "Partition spec extraction" in [reference.md](./reference.md) for what's supported and the code↔DDL mismatch detection.
 - **Hive metastore catalog** — if the original project used Hive MetaStore, configure Iceberg's HiveCatalog:
   ```
   spark.sql.catalog.hive_prod = org.apache.iceberg.spark.SparkCatalog
@@ -110,31 +180,45 @@ After automated conversion, manually review:
   CALL hive_prod.system.migrate('db.events')
   ```
 
+For other known caveats (FQN propagation, streaming, pyarrow dataset, viewfs, etc.) see "Known Limitations" in [reference.md](./reference.md).
+
 ### 6. Create the Iceberg Table
 
-**Python (pyiceberg):**
-```python
-from pyiceberg.catalog import load_catalog
-from pyiceberg.schema import Schema
-from pyiceberg.types import NestedField, LongType, StringType, DoubleType
+**Schema is generated from S2T Excel (per S2T_GUIDE.md), TBLPROPERTIES come from ICEBERG_WF_GUIDE.md, catalog is `spark_catalog` with `type=hive`. Do not invent schemas or properties.**
 
-catalog = load_catalog("default", **{"type": "sql", "uri": "sqlite:///iceberg.db"})
-schema = Schema(
-    NestedField(1, "id", LongType(), required=True),
-    NestedField(2, "status", StringType()),
-    NestedField(3, "value", DoubleType()),
-)
-catalog.create_table("default.events", schema=schema)
-```
+Concrete:
 
-**Java/Scala (Spark SQL):**
+1. Generate / regenerate DDL from `s2t.xlsx` per S2T_GUIDE "Контрольный список перед запуском" (the DDL generator step that turns S2T into `src/main/resources/sql/ddl/<layer>/<table>.sql`). Then change `STORED AS PARQUET` → `USING iceberg`.
+
 ```sql
-CREATE TABLE default.events (
-  id BIGINT NOT NULL,
-  status STRING,
-  value DOUBLE
-) USING iceberg
+CREATE TABLE {{datamart_name}}.<table> (
+  -- columns FROM S2T sheet `Columns` — types/nullability AS-IS from S2T
+)
+USING iceberg
+PARTITIONED BY (
+  -- FROM S2T sheet `Partitions` — typically (ctl_loading INT) or part_report_dt
+)
+TBLPROPERTIES (
+  'format-version' = '2',
+  'write.parquet.compression-codec' = 'zstd'
+  -- MoR vs CoW: ICEBERG_WF_GUIDE does not prescribe a default per table.
+  -- Add 'write.update.mode' / 'write.delete.mode' / 'write.merge.mode' = 'merge-on-read'
+  -- only when the table has row-level UPDATE/DELETE/MERGE — confirm from DML scripts under
+  -- src/main/resources/sql/dml/ before setting these.
+);
 ```
+
+2. Wire the table into compaction per [ICEBERG_WF_GUIDE.md](./ICEBERG_WF_GUIDE.md) — this is **not optional**:
+   - Create `src/main/resources/sql/dml/exp_iceberg_<table>.sql` (expire_snapshots) — template in ICEBERG_WF_GUIDE "Expire snapshots only".
+   - Create `src/main/resources/sql/dml/upd_iceberg_<table>.sql` (full cycle) — template in ICEBERG_WF_GUIDE "Полный цикл обслуживания".
+   - Add the two `spark_driver_extraJavaOptions__hdfs_care_*` params for the table to existing `wf_schema_hdfs_care` in `src/main/resources/wf/ctl/ctl.yml`. If `wf_schema_hdfs_care` does not exist for the project, follow "Сценарий 2: Создай отдельный wf для таблицы".
+   - Use `entity_id` captured in Step 3.
+
+3. Update the Gherkin scenario (`ift.feature` / `st_skl.feature`) per S2T_GUIDE "Шаг 4: Добавь сценарий в Gherkin-файл" — add the new table to the DDL check sub-scenarios.
+
+The `iceberg-runbook/<ns>.<table>/phase2_rewrite.sql` emitted by the migrator is a **template** — in OpenFlow projects, replace it with the `wf_schema_hdfs_care` wiring above. Phase 1 (`add_files`) and Phase 3 (switchover) still apply.
+
+For the rest of the phased rollout (Phase 1 `add_files`, Phase 3 switchover options) and operational background (MoR/CoW, snapshot expiration), see [reference.md](./reference.md) sections "Phased migration runbook" and "Post-Migration Operational Concerns" — but read them through the lens of ICEBERG_WF_GUIDE.md (wf/ctl wiring, not standalone Spark jobs).
 
 ### 7. Run Existing Tests
 
@@ -165,451 +249,7 @@ git add -A
 git commit -m "refactor: migrate parquet read/write to Apache Iceberg"
 ```
 
-## Conversion Reference — Python
+## Where to look next
 
-| Before (Parquet) | After (Iceberg) |
-|---|---|
-| `pd.read_parquet(path)` / `pd.read_orc(path)` | `catalog.load_table((ns, name)).scan().to_pandas()` |
-| `df.to_parquet(path)` / `df.to_orc(path)` | `tbl.overwrite(df)` |
-| `spark.read.parquet(path)` / `.orc(path)` | `spark.table("ns.name")` |
-| `spark.read.format("parquet"\|"orc").load(path)` | `spark.table("ns.name")` |
-| `df.write.parquet(path)` / `.orc(path)` | `df.writeTo("ns.name").overwritePartitions()` |
-| `df.write.format("parquet"\|"orc").save(path)` | `df.writeTo("ns.name").overwritePartitions()` |
-| `pq.read_table(path)` / `orc.read_table(path)` | `tbl.scan().to_arrow()` |
-| `pq.write_table(table, path)` / `orc.write_table(...)` | `tbl.overwrite(table)` |
-| `pq.ParquetFile` / `pq.ParquetDataset` / `pa.dataset.*` | *(TODO comment — rewrite manually)* |
-| `spark.readStream.parquet/orc/format(...)` | *(TODO comment — manual migration)* |
-
-## Conversion Reference — Java/Scala Spark
-
-| Before (Java) | After (Iceberg) |
-|---|---|
-| `spark.read().parquet("p")` / `.orc("p")` | `spark.read().format("iceberg").load("ns.table")` |
-| `spark.read().format("parquet"\|"orc").load("p")` | `spark.read().format("iceberg").load("ns.table")` |
-| `df.write().mode("overwrite").parquet("p")` / `.orc("p")` | `df.writeTo("ns.table").overwritePartitions()` |
-| `df.write()...format("parquet"\|"orc").save("p")` | `df.writeTo("ns.table").overwritePartitions()` |
-| `df.write().saveAsTable("t")` *(no partitionBy / bucketBy)* | `df.writeTo("ns.t").createOrReplace()` |
-| `df.write().partitionBy(...).saveAsTable("t")` / `.bucketBy(...).saveAsTable("t")` | **Two steps:** (1) pre-create `CREATE TABLE ns.t (...) USING iceberg PARTITIONED BY (...)` with the desired Iceberg partition spec; (2) rewrite call site as `df.writeTo("ns.t").overwritePartitions()`. `createOrReplace()` would silently drop the spec. |
-| `df.write().partitionBy("day").parquet(...)` | `df.writeTo("ns.t").overwritePartitions()` *(+ TODO comment — user must pre-create the table with the right partition spec)* |
-| `spark.readStream()....parquet\|orc\|format(...)` | *(TODO comment — manual migration)* |
-
-| Before (Scala) | After (Iceberg) |
-|---|---|
-| `spark.read.parquet("p")` / `.orc("p")` | `spark.read.format("iceberg").load("ns.table")` |
-| `spark.read.format("parquet"\|"orc").load("p")` | `spark.read.format("iceberg").load("ns.table")` |
-| `df.write.mode("overwrite").parquet("p")` / `.orc("p")` | `df.writeTo("ns.table").overwritePartitions()` |
-| `df.write.format("parquet"\|"orc").save("p")` | `df.writeTo("ns.table").overwritePartitions()` |
-
-## Conversion Reference — Hive / SparkSQL
-
-| Before | After |
-|---|---|
-| `"CREATE TABLE t (...) STORED AS PARQUET\|ORC"` | `"CREATE TABLE t (...) USING iceberg"` |
-| `"CREATE [EXTERNAL] TABLE t (...) STORED AS PARQUET LOCATION '...'"` | `"CREATE TABLE t (...) USING iceberg LOCATION '...'"` *(review LOCATION semantics manually)* |
-| `"CREATE TABLE t (...) USING parquet\|orc"` | `"CREATE TABLE t (...) USING iceberg"` |
-| `df.write().saveAsTable("t")` *(no partitionBy / bucketBy)* | `df.writeTo("ns.t").createOrReplace()` |
-| `df.write().bucketBy(...).saveAsTable("t")` / `.partitionBy(...).saveAsTable("t")` | Pre-create `CREATE TABLE ns.t (...) USING iceberg PARTITIONED BY (bucket(N, col))` then `df.writeTo("ns.t").overwritePartitions()`. **Do not** use `createOrReplace()` here — it resets the partition spec. |
-| `"INSERT INTO TABLE t ..."` / `"INSERT OVERWRITE TABLE t ..."` | *(no change — Spark handles Iceberg tables via the same SQL, assuming catalog is configured)* |
-| Existing Hive table with data | `CALL catalog.system.migrate('db.t')` — manual step |
-
-## Dependencies Added
-
-| Ecosystem | File | Dependency |
-|---|---|---|
-| Python | `requirements.txt` / `pyproject.toml` | `pyiceberg[sql-sqlite]>=0.7.0` |
-| Maven | `pom.xml` | `org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0` |
-| Gradle | `build.gradle` | `implementation 'org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0'` |
-
-## Multi-table projects
-
-Projects that touch several logical tables use a **mapping file** to route each path to its Iceberg target. JSON format:
-
-```json
-{
-  "default": {"namespace": "default", "table": "unmapped"},
-  "tables": [
-    {"path_glob": "s3://bucket/events/*", "namespace": "analytics", "table": "events"},
-    {"path_glob": "*/users/*",            "namespace": "analytics", "table": "users"},
-    {"path_glob": "s3://legacy/*",        "skip": true},
-    {"path_glob": "s3://bucket/logs/*",   "direction": "write", "namespace": "analytics", "table": "logs"},
-    {"path_glob": "s3://bucket/logs/*",   "direction": "read",  "skip": true}
-  ]
-}
-```
-
-- `tables` — ordered list; first matching `path_glob` (fnmatch style) wins.
-- `default` — optional fallback target when no glob matches.
-- `skip: true` — matching operations are **left as parquet/ORC**. The transformer drops an `iceberg: skipped by mapping` marker above the line so it's obvious on review.
-- `direction: "read" | "write" | "any"` (default `"any"`) — restrict an entry to one side only. Paired entries let you migrate writes but keep reads (or vice versa).
-- You can also pass `--table`/`--namespace` **alongside** `--mapping` as a CLI-level fallback.
-
-Run it:
-```bash
-python -m skills.open_table_migrator.cli <project> --mapping mapping.json
-```
-
-In a single source file with multiple targets, the worklist emits one entry per call site with the resolved `(namespace, table)`. Calls whose path is a variable or doesn't match any glob (and has no fallback) are flagged as unresolved so the LLM rewriter surfaces them to the user.
-
-## Post-Migration Operational Concerns
-
-The skill rewrites **code**, not the operational model of the tables. After the migration lands, surface these three questions to the user — they change how the tables behave in production.
-
-### 1. Format version & write mode (Copy-on-Write vs Merge-on-Read)
-
-MoR/CoW is a **table property**, not a code choice. `INSERT` / `append` / `overwritePartitions()` are unaffected — the mode only changes how `UPDATE` / `DELETE` / `MERGE INTO` materialize changes.
-
-```sql
-ALTER TABLE ns.events SET TBLPROPERTIES (
-  'format-version'       = '2',               -- required for MoR
-  'write.update.mode'    = 'merge-on-read',   -- or 'copy-on-write'
-  'write.delete.mode'    = 'merge-on-read',
-  'write.merge.mode'     = 'merge-on-read'
-);
-```
-
-| | Copy-on-Write (default pre-v2) | Merge-on-Read (v2) |
-|---|---|---|
-| What is written on UPDATE/DELETE | Fully rewritten data files | Original files + position/equality delete files |
-| Write latency | High (rewrite partition) | Low |
-| Read latency | Low | Higher — reader applies deletes on the fly |
-| Use when | Rare updates, read-heavy analytics | Frequent upserts, CDC, streaming |
-
-Ask the user whether the table has row-level mutations before defaulting; if it does, MoR + v2 is usually the right pick.
-
-### 2. Compaction
-
-Iceberg compaction is a **procedure call**, not a background process. Nothing auto-compacts unless the user runs one of:
-
-```sql
--- Bin-pack or sort small files, apply pending deletes (for MoR)
-CALL catalog.system.rewrite_data_files(
-  table   => 'ns.events',
-  strategy => 'binpack',
-  options => map('min-input-files','5','target-file-size-bytes','536870912')
-);
-
--- Compact the manifest list (speeds up scan planning)
-CALL catalog.system.rewrite_manifests('ns.events');
-```
-
-**Where it runs:** any Spark session with `iceberg-spark-runtime` and catalog access. Typical deployment patterns:
-
-- **Airflow / Dagster DAG** — scheduled `rewrite_data_files` every N hours
-- **Streaming job post-hook** — compact after each micro-batch commit window
-- **Managed catalog** — Tabular, Snowflake Polaris, AWS Glue and Dremio can run compaction for you; no user job needed
-- **Ad-hoc cron** — plain `spark-submit` on a schedule
-
-Compaction does not block writers — it creates a new snapshot and the old files remain until expiration.
-
-### 3. Snapshot expiration & orphan cleanup
-
-Iceberg keeps old snapshots forever unless told otherwise. Two calls every user should schedule (usually together with `rewrite_data_files`):
-
-```sql
-CALL catalog.system.expire_snapshots(
-  table => 'ns.events',
-  older_than => TIMESTAMP '2026-04-01 00:00:00'
-);
-
-CALL catalog.system.remove_orphan_files(table => 'ns.events');
-```
-
-Without this the catalog grows unboundedly and old data files never get GC'd.
-
-**Note:** none of these procedures are written by the skill. They are a deployment concern — mention them after the rewrite is green, and let the user wire them into whatever scheduler they already use.
-
-## Path schemes
-
-The mapping resolver is URI-aware. Sub-scheme variants of the same storage are treated as equivalent:
-
-| Canonical scheme | Aliases | Example |
-|---|---|---|
-| `s3` | `s3a`, `s3n` | `s3://bucket/key` |
-| `hdfs` | `webhdfs` | `hdfs://nameservice/path` |
-| `abfs` | `abfss` | `abfs://container@account.dfs.core.windows.net/path` |
-| `gs` | — | `gs://bucket/key` |
-| `viewfs` | — (kept distinct from `hdfs`) | `viewfs://nameservice/path` |
-| `file` | bare paths (`/tmp/...`, `./data/...`) | `file:///tmp/x` |
-
-A mapping entry `s3://bucket/users/*` matches paths in the code regardless of whether the code writes `s3://`, `s3a://`, or `s3n://`. The same is true for `hdfs`/`webhdfs` and `abfs`/`abfss`.
-
-**`path_arg` in the worklist is preserved verbatim** — the equivalence is applied only when comparing against mapping globs.
-
-### Glob syntax
-
-Mapping patterns support shell-style globs in the authority and path components:
-
-- `*` matches any character sequence (including `/`) — same as `s3://bucket/users/*` matching `s3://bucket/users/2024/01/data.parquet`
-- `**` is provided for clarity and behaves the same as `*` in single-pattern matches
-- `?` matches one character
-- Brackets like `[abc]` are not supported
-
-This matches the convention used by `aws s3` and similar cloud-storage tools.
-
-### Bare local paths
-
-Bare paths (`./data/x`, `/tmp/fixtures/x`) are treated as `file://` for matching. Relative paths are resolved against the project root passed via the CLI.
-
-### viewfs limitation
-
-`viewfs://` is **not** auto-resolved against an underlying `hdfs://` cluster. Mount-point resolution depends on cluster config we do not read. If your project uses both `viewfs://` and `hdfs://` (e.g., logical mount in jobs, physical path in DDL), list both schemes explicitly in the mapping:
-
-```json
-{
-  "tables": [
-    { "path_glob": "viewfs://nameservice/data/users/*", "namespace": "analytics", "table": "users" },
-    { "path_glob": "hdfs://realCluster/data/users/*",   "namespace": "analytics", "table": "users" }
-  ]
-}
-```
-
-### Scheme-less globs (backward compat)
-
-Glob patterns without a scheme and not starting with `/` (e.g., `*users*`, `data/*`) fall back to `fnmatch` against the **full raw `path_arg` string** — including any scheme prefix. So `*users*` matches `s3://bucket/users/x` because the full raw string contains the literal substring `users`. This preserves legacy mapping files that pre-date URI awareness. New patterns should prefer explicit schemes for clarity.
-
-### Unknown schemes
-
-Unknown schemes (e.g., `ftp://`, custom enterprise schemes) emit a one-time stderr warning per scheme. They participate in matching only via exact `raw_scheme` equality — no aliasing applied.
-
-## Constant folding
-
-The detector resolves name-to-literal bindings at the file level so that I/O calls using a named constant become as informative as those using a literal directly.
-
-```python
-EVENTS_PATH = "s3://bucket/events"
-df = pd.read_parquet(EVENTS_PATH)   # path_arg = "s3://bucket/events"
-```
-
-### What is resolved
-
-- **Python:** module-level `X = "..."`, function-local `X = "..."`, one level of `+` concat (`X = BASE + "/events"` when `BASE` is already a known literal).
-- **Java:** class `static final` and inline-initialised `final` fields, method-local `final` variables, one level of `+` concat across fields.
-- **Scala:** object/class-level `val`, def-local `val`, one level of `+` concat.
-
-### What is skipped
-
-- **f-strings** (`f"..."`, `s"..."` Scala) — interpolation depends on runtime values.
-- **`.format()`, `%`-format, multiplication** — only `+` concat is recognised.
-- **Reassignment** — any reassigned name is marked unresolvable. `attrs.skipped_reason = "reassigned"` records the reason.
-- **Constructor-only Java fields** — `private final String x;` initialised inside a constructor is not parsed.
-- **Cross-file references** — `from config import X` is not followed; constants in other files are out of scope.
-- **3+ operand concat** — `A + B + C` is not resolved; only single-`+` expressions.
-- **Non-literal RHS** — `os.getenv(...)`, function calls, etc.
-
-### Audit trail
-
-When a match resolves a name, `match.attrs["resolved_from"] = "NAME@file:line"` is set so the worklist preserves the original source location. The detector emits the same `path_arg` value regardless of whether it came from a literal at the call site or a resolved binding.
-
-## Partition spec extraction
-
-When a Spark write site uses `.partitionBy(...)` or `.bucketBy(N, ...)`, the detector captures the partition specification structurally and propagates it into the worklist so the migration agent can generate the correct Iceberg `PartitionSpec` per target.
-
-### Supported transforms (MVP)
-
-| Spark API | Iceberg transform |
-|---|---|
-| `.partitionBy("col")` | `identity(col)` |
-| `.partitionBy("col1", "col2", ...)` | one `identity(col)` per arg |
-| `.bucketBy(N, "col1", "col2", ...)` | one `bucket(N, col)` per col arg |
-
-Time-based transforms (`year`/`month`/`day`/`hour`) and `truncate(N, col)` are out of MVP scope — Spark uses these through `withColumn(...)` pre-pass + identity partitioning, which would require intra-method data flow.
-
-### Detection scope
-
-- **Python PySpark** — `df.write.partitionBy/.bucketBy`
-- **JVM Spark** — Java/Scala DataFrame API
-- **Hive DDL in `.sql` files** — `PARTITIONED BY (col1, col2)` (identity transforms only; Hive `PARTITIONED BY` has no `bucket(N)` form)
-
-Constants used as args resolve via the const-folding module (1.1): `REGION = "region"; df.write.partitionBy(REGION)` resolves to `identity(region)`.
-
-### Edge cases
-
-- `partitionBy()` (no args) → no transforms
-- `partitionBy(*cols)` (splat) → skipped silently
-- `partitionBy(year("ts"))` (function call) → skipped silently (out of scope)
-- `bucketBy(N_var, "col")` where N is an identifier → skipped (MVP requires int literal for N)
-- Multiple `partitionBy` calls in one chain → merged in chain order
-
-### Worklist output
-
-Write-direction entries gain an optional `partition_spec` array:
-
-```json
-{
-  "site": "src/jobs/users.py:54",
-  "kind": "write",
-  "target": "analytics.users",
-  "partition_spec": [
-    {"kind": "identity", "column": "region"},
-    {"kind": "bucket", "column": "uid", "n": 8}
-  ]
-}
-```
-
-When no partitions are detected, the field is **omitted** from the JSON (not `[]`).
-
-### Code↔DDL mismatch detection
-
-If both `df.write.partitionBy(...).saveAsTable(t)` (code) and `CREATE TABLE t ... PARTITIONED BY (...)` (DDL in `.sql` file) exist for the same table, the analyzer compares both `partition_spec` values. If they diverge, the match's `attrs["partition_mismatch"]` is populated:
-
-```
-code: identity(region); ddl: identity(date_col)
-```
-
-The agent sees this warning and can flag it before applying the rewrite.
-
-## Dynamic SQL loading
-
-The detector finds call-sites that load `.sql` files at runtime and cross-references them with parquet/orc tables defined in those (or related) files. This catches the common pattern where SQL is stored separately from code:
-
-```python
-sql = open("queries/events_update.sql").read()
-spark.sql(sql)
-```
-
-### Detected patterns
-
-| Language | Pattern | Example |
-|---|---|---|
-| Python | `py_open` | `open("x.sql")` |
-| Python | `py_path_read_text` | `Path("x.sql").read_text()` |
-| Python | `py_pkgutil_get_data` | `pkgutil.get_data(__name__, "x.sql")` |
-| Java | `java_files_read` | `Files.readAllBytes(Path.of("x.sql"))` |
-| Java/Scala | `java_resource_stream` | `getClass().getResourceAsStream("/sql/x.sql")` |
-
-### What's parsed in the loaded SQL
-
-Beyond `CREATE TABLE ... STORED AS PARQUET` (already handled), the SQL registry now also extracts non-DDL references:
-
-- `INSERT INTO <table>` and `INSERT OVERWRITE TABLE <table>` → write reference
-- `UPDATE <table> SET ...` → write reference
-- `MERGE INTO <table>` → write reference
-- `FROM <table>` / `JOIN <table>` → read reference
-
-CTE names introduced by `WITH <name> AS (...)` are skipped from `FROM`/`JOIN` references.
-
-### Cross-reference behavior
-
-For each loader, the loader's `sql_filename` is resolved against the project tree in three steps:
-
-1. Path relative to the loader's containing file's directory.
-2. Path relative to project root.
-3. Basename match across all registered `.sql` files (with `match_kind="basename_unique"` or `"basename_ambiguous"`).
-
-Tables mentioned in the resolved SQL file (via CREATE / INSERT / FROM / JOIN / etc.) are joined against the registry of parquet/orc `CREATE TABLE` definitions across all `.sql` files. This handles the common pattern of `schema.sql` (with CREATE) and `queries/*.sql` (with INSERT only).
-
-### Worklist output
-
-Each cross-reference appears in `lakehouse-worklist.json` under `dynamic_sql_loaders`:
-
-```json
-{
-  "file": "src/jobs/events.py",
-  "line": 42,
-  "pattern": "py_open",
-  "sql_filename": "queries/events_update.sql",
-  "confidence": "high",
-  "resolved_to": "queries/events_update.sql",
-  "match_kind": "exact_path",
-  "tables": [
-    {"name": "events", "format": "parquet", "ddl_file": "schema.sql", "ddl_line": 8}
-  ]
-}
-```
-
-### Limitations
-
-- SQL templating (Jinja, `.format`, `${...}`) is not parsed.
-- In-SQL `\i` / `SOURCE` / `!include` directives are not followed.
-- ORM-generated SQL (SQLAlchemy `select(...)`, jOOQ DSL) is not detected.
-- Dynamic table names within SQL (`INSERT INTO {schema}.events`) are not resolved.
-
-## Dry run
-
-The `--dry-run` flag runs the full migration pipeline (detection, cross-reference, worklist building, prepass planning, dependency-update planning) but writes **nothing** to disk. Output is printed to stdout in four sections, suitable for change-review documentation.
-
-### Usage
-
-```bash
-PYTHONPATH=. python3 -m skills.open_table_migrator.cli <project_path> \
-    --table users --namespace analytics --dry-run
-```
-
-### What is suppressed
-
-- `lakehouse-worklist.json` is not written.
-- Source files (`.py`/`.java`/`.scala`) are not modified (skip-markers, pyspark conf comments).
-- Build files (`pyproject.toml`, `pom.xml`, `build.gradle[.kts]`, `build.sbt`, `requirements.txt`) are not modified.
-
-### Output sections
-
-1. **Summary** — counts: entries that would go in the worklist, files that would be prepass'd, build files that would be updated.
-2. **Worklist preview** — the full `lakehouse-worklist.json` content that would be written, printed to stdout as JSON.
-3. **Prepass diff preview** — unified diff of skip-markers and pyspark conf comments that would be added to source files, per file.
-4. **Build-file updates** — unified diff of the pyiceberg / iceberg-spark-runtime dependency additions to each build file.
-
-Sections without content are omitted (e.g., no prepass section if nothing would be touched).
-
-### Composition with other flags
-
-- `--dry-run --no-deps` — valid; `--no-deps` is redundant.
-- `--dry-run --mapping foo.json` — valid; mapping is read normally.
-- `--dry-run --table X --namespace Y` — valid.
-
-Validation rules (e.g., requiring `--table` with `--namespace`) still apply in dry-run mode.
-
-### Exit code
-
-Always 0 on successful dry-run. Pre-existing argument-validation errors still return exit code 2.
-
-## Phased migration runbook
-
-For each target Iceberg table found in the worklist, the migrator emits a per-table directory under `iceberg-runbook/` containing:
-
-- `migration-plan.md` — phase descriptions, pre-flight checklist, code-sites table, warnings
-- `phase1_add_files.sql` — Spark SQL for `system.add_files` (in-place metadata creation)
-- `phase2_rewrite.sql` — Spark SQL for `system.rewrite_data_files` (compaction)
-- `phase3_switchover.sql` — three OPTION blocks: Spark VIEW, HMS direct rename, Application-level rename per worklist
-
-Plus `iceberg-runbook/README.md` as a top-level index with a summary table of all migrations.
-
-### Phases
-
-| Phase | Estimated runtime | Risk |
-|---|---|---|
-| 1: add_files | minutes | Low — reversible by dropping target table |
-| 2: rewrite_data_files | hours | Medium — resource-heavy, can be deferred |
-| 3: switchover | minutes | Coordinated cutover — requires consumer alignment |
-
-### Phase 3 options
-
-Phase 3 has three switchover patterns. The user picks ONE per stack and comments out the others:
-
-- **OPTION A (Spark VIEW)** — replace old Hive table with a view pointing at Iceberg. Works for SELECT-only consumers; breaks `INSERT INTO` clients.
-- **OPTION B (HMS direct rename)** — atomic at metastore level. Requires admin access.
-- **OPTION C (Application-level rename)** — update each call site in the code per `lakehouse-worklist.json`. Listed in the SQL file as comments.
-
-### Automation
-
-Runbook generation runs alongside worklist generation on every `convert_project`. The `--dry-run` flag suppresses the directory write and prints the runbook contents as a 5th preview section.
-
-### Limitations
-
-- Spark SQL syntax only (no Trino, ClickHouse, Snowflake).
-- Schema in `phase1_add_files.sql` is a placeholder — the operator must run `spark.read.parquet(...).printSchema()` and paste the result.
-- No data-size estimation or runtime prediction.
-- No DAG between tables (each migration is independent).
-- `partition_mismatch` warning is included in the runbook, but the operator must decide which side (code or DDL) is correct.
-
-## Known Limitations
-
-- **FQN propagation on read sites** — after rewriting `saveAsTable("Foo")` → `writeTo("ns.Foo")`, every downstream reference to the bare name (`spark.table("Foo")`, `CACHE TABLE Foo`, `SELECT ... FROM Foo`, `DROP TABLE Foo`) must be updated to the fully-qualified `ns.Foo`. Otherwise those calls resolve through the default session catalog and miss the Iceberg table entirely. The detector reports these reads, but the worklist does not automatically bind them to the write-site rewrite — walk each `spark_read_table` / SparkSQL match in the same file and rename by hand.
-- **Partitioning and bucketing** — `partitionBy(...)` / `bucketBy(...)` on a write is preserved as a `TODO(iceberg)` comment, never auto-rewritten. If the original table was partitioned or bucketed, **ask the user** in Step 3 whether the layout matters, then pre-create the Iceberg table with the matching partition spec (`PARTITIONED BY (bucket(N, col))` / `PARTITIONED BY (days(col))`) before letting the rewrite run. Using `createOrReplace()` on a saveAsTable with bucketing silently drops the spec.
-- **Structured Streaming** (readStream/writeStream with parquet/orc sinks) is **detected but not rewritten** — the transformer inserts a `TODO(iceberg)` comment. Migrate manually using `.format("iceberg")` + `writeStream.toTable("ns.t")` / `.option("path", ...)`.
-- **pyarrow dataset API** (`ParquetFile`, `ParquetDataset`, `pa.dataset.*`) is also warn-only — rewrite to `catalog.load_table(...).scan().to_arrow()` by hand.
-- **Cloud catalog configs** (Glue, Nessie, REST) need manual setup — this tool generates SQLite dev config for Python, and leaves JVM catalog config untouched
-- **Hive table data migration** — the tool rewrites *code* but does not migrate existing parquet/ORC data; use `CALL system.migrate(...)` for in-place migration or `CTAS` for copy
-- **Scala 2.13 / Spark 3.4** — the generated Maven/Gradle coordinates target Spark 3.5 + Scala 2.12; adjust manually for other versions
-- **`LOCATION` clause** on `CREATE EXTERNAL TABLE` — rewritten to `USING iceberg LOCATION ...` but Iceberg's LOCATION semantics differ from Hive's; review manually.
-- **INSERT INTO / OVERWRITE** — detected but intentionally not rewritten (same SQL works on Iceberg tables). Reported only so you know the file is touching table data.
-- **False positives** — `INSERT INTO`, `saveAsTable`, and `USING parquet` regexes match *any* table by that pattern, not just the table you're migrating. Use `filter_matches` to scope if a project touches multiple tables.
+- **[examples.md](./examples.md)** — conversion reference tables (Python, Java/Scala, Hive/SparkSQL), dependencies added per ecosystem, multi-table mapping file format.
+- **[reference.md](./reference.md)** — operational concerns (MoR/CoW, compaction, snapshot expiration), path schemes (s3/hdfs/abfs/gs/viewfs/file), constant folding rules, partition spec extraction, dynamic SQL loading, dry-run mode, phased migration runbook, known limitations.

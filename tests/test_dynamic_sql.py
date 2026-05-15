@@ -1,7 +1,7 @@
 from pathlib import Path
 from textwrap import dedent
 
-from skills.open_table_migrator.dynamic_sql import (
+from skills.open_table_migrator.scripts.dynamic_sql import (
     DynamicSqlLoader,
     detect_dynamic_sql_loaders,
 )
@@ -72,7 +72,7 @@ def test_python_open_identifier_with_const_table(tmp_path):
         SQL_FILE = "queries/x.sql"
         sql = open(SQL_FILE).read()
     '''))
-    from skills.open_table_migrator import scope
+    from skills.open_table_migrator.scripts import scope
     loaders = detect_dynamic_sql_loaders(
         tmp_path,
         const_table_for_file=lambda p: scope.build_const_table(p.read_bytes(), "python", str(p)),

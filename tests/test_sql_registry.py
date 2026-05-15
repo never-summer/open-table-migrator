@@ -2,9 +2,9 @@
 import textwrap
 from pathlib import Path
 
-from skills.open_table_migrator.analyzer import cross_reference_sql, dedup_matches
-from skills.open_table_migrator.detector import detect_parquet_usage
-from skills.open_table_migrator.sql_registry import (
+from skills.open_table_migrator.scripts.analyzer import cross_reference_sql, dedup_matches
+from skills.open_table_migrator.scripts.detector import detect_parquet_usage
+from skills.open_table_migrator.scripts.sql_registry import (
     TableDef,
     build_format_map,
     scan_sql_files,
@@ -104,8 +104,8 @@ def test_hive_partitioned_by_single_column(tmp_path):
         "PARTITIONED BY (region STRING) "
         "STORED AS PARQUET;"
     )
-    from skills.open_table_migrator.sql_registry import scan_sql_files
-    from skills.open_table_migrator.detector import PartitionTransform
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_files
+    from skills.open_table_migrator.scripts.detector import PartitionTransform
     defs = scan_sql_files(tmp_path)
     assert len(defs) == 1
     assert defs[0].partition_spec == (
@@ -119,8 +119,8 @@ def test_hive_partitioned_by_multiple_columns(tmp_path):
         "PARTITIONED BY (region STRING, date_col DATE) "
         "STORED AS PARQUET;"
     )
-    from skills.open_table_migrator.sql_registry import scan_sql_files
-    from skills.open_table_migrator.detector import PartitionTransform
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_files
+    from skills.open_table_migrator.scripts.detector import PartitionTransform
     defs = scan_sql_files(tmp_path)
     assert len(defs) == 1
     cols = [t.column for t in defs[0].partition_spec]
@@ -133,7 +133,7 @@ def test_hive_no_partitioned_by(tmp_path):
     (tmp_path / "schema.sql").write_text(
         "CREATE TABLE events (id INT) STORED AS PARQUET;"
     )
-    from skills.open_table_migrator.sql_registry import scan_sql_files
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_files
     defs = scan_sql_files(tmp_path)
     assert len(defs) == 1
     assert defs[0].partition_spec == ()
@@ -237,7 +237,7 @@ def test_cross_ref_no_match_when_table_not_parquet(tmp_path: Path):
 
 def test_insert_into_emits_write_reference(tmp_path):
     (tmp_path / "x.sql").write_text("INSERT INTO events SELECT * FROM staging;")
-    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_table_references
     refs = scan_sql_table_references(tmp_path)
     write_refs = [r for r in refs if r.role == "write"]
     assert any(r.table_name == "events" for r in write_refs)
@@ -245,28 +245,28 @@ def test_insert_into_emits_write_reference(tmp_path):
 
 def test_insert_overwrite_emits_write_reference(tmp_path):
     (tmp_path / "x.sql").write_text("INSERT OVERWRITE TABLE events SELECT 1;")
-    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_table_references
     refs = scan_sql_table_references(tmp_path)
     assert any(r.table_name == "events" and r.role == "write" for r in refs)
 
 
 def test_select_from_emits_read_reference(tmp_path):
     (tmp_path / "x.sql").write_text("SELECT * FROM events WHERE active = true;")
-    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_table_references
     refs = scan_sql_table_references(tmp_path)
     assert any(r.table_name == "events" and r.role == "read" for r in refs)
 
 
 def test_join_emits_read_reference(tmp_path):
     (tmp_path / "x.sql").write_text("SELECT * FROM users u JOIN devices d ON u.id = d.user_id;")
-    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_table_references
     refs = scan_sql_table_references(tmp_path)
     assert any(r.table_name == "devices" and r.role == "read" for r in refs)
 
 
 def test_update_emits_write_reference(tmp_path):
     (tmp_path / "x.sql").write_text("UPDATE events SET active = false WHERE id = 1;")
-    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_table_references
     refs = scan_sql_table_references(tmp_path)
     assert any(r.table_name == "events" and r.role == "write" for r in refs)
 
@@ -276,7 +276,7 @@ def test_cte_name_not_registered_as_table(tmp_path):
         "WITH staging AS (SELECT * FROM users) "
         "INSERT INTO events SELECT * FROM staging JOIN devices ON 1=1;"
     )
-    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_table_references
     refs = scan_sql_table_references(tmp_path)
     # 'staging' is a CTE and must NOT appear as a table reference.
     assert not any(r.table_name == "staging" for r in refs)
@@ -297,7 +297,7 @@ def test_multi_cte_all_names_filtered(tmp_path):
              final AS (SELECT * FROM enriched)
         SELECT * FROM final;
     '''))
-    from skills.open_table_migrator.sql_registry import scan_sql_table_references
+    from skills.open_table_migrator.scripts.sql_registry import scan_sql_table_references
     refs = scan_sql_table_references(tmp_path)
     # CTE names: staging, enriched, final — none should appear.
     names = {r.table_name for r in refs}

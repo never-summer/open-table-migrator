@@ -57,8 +57,8 @@ Project analysis:
 ```bash
 PYTHONPATH=. python -c "
 from pathlib import Path
-from skills.open_table_migrator.detector import detect_all_io
-from skills.open_table_migrator.analyzer import build_report, format_report
+from skills.open_table_migrator import detect_all_io
+from skills.open_table_migrator import build_report, format_report
 
 matches = detect_all_io(Path('path/to/project'))
 print(format_report(build_report(matches), project_root=Path('path/to/project')))
@@ -68,18 +68,18 @@ print(format_report(build_report(matches), project_root=Path('path/to/project'))
 Single-table migration — emits `lakehouse-worklist.json`:
 
 ```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli path/to/project \
+PYTHONPATH=. python -m skills.open_table_migrator path/to/project \
     --table events --namespace analytics
 ```
 
 Multi-table migration:
 
 ```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli path/to/project \
+PYTHONPATH=. python -m skills.open_table_migrator path/to/project \
     --mapping ./lakehouse-mapping.json
 ```
 
-Mapping format — see [SKILL.md](skills/open_table_migrator/SKILL.md#multi-table-projects).
+Mapping format — see [examples.md](skills/open_table_migrator/examples.md#multi-table-projects).
 
 ---
 
@@ -180,7 +180,7 @@ The regex detector is preserved in the `regex-detector` branch.
 - JVM coordinates: Spark 3.5 + Scala 2.12
 - `partitionBy(...)` in JVM → TODO for manual Iceberg partition spec
 
-Full list — in [SKILL.md § Known Limitations](skills/open_table_migrator/SKILL.md#known-limitations).
+Full list — in [reference.md § Known Limitations](skills/open_table_migrator/reference.md#known-limitations).
 
 ## License
 

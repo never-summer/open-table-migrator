@@ -16,7 +16,7 @@ You have access to the `open-table-migrator` skill (see `skills/open_table_migra
 - A pre-pass (`prepass.run_prepass`) that drops skip markers + the pyspark Iceberg-conf comment without touching real read/write ops
 - A worklist builder (`worklist.build_worklist`) that produces `lakehouse-worklist.json` — the rewrite task list for you (the agent) to execute via `Edit`
 - A dependency updater (`update_dependencies`) for requirements.txt, pyproject.toml, pom.xml, build.gradle[.kts], and build.sbt — scanned recursively through nested modules
-- A CLI entry point: `python -m skills.open_table_migrator.cli <project> [--table <name> --namespace <ns>] [--mapping file] [--no-deps]`
+- A CLI entry point: `python -m skills.open_table_migrator <project> [--table <name> --namespace <ns>] [--mapping file] [--no-deps]`
 
 The skill uses **tree-sitter AST-based** detection. It will miss custom wrappers, dynamic dispatch, reflection, and other dynamic idioms. You (the agent) are expected to run a **manual sanity-check pass** with your own `Read`/`Grep` tools as step 2.5 to catch what the detector misses — see below.
 
@@ -41,8 +41,8 @@ Run the detector against the project root and build a report. Show the user:
 Example:
 
 ```python
-from skills.open_table_migrator.detector import detect_parquet_usage
-from skills.open_table_migrator.analyzer import build_report, format_report
+from skills.open_table_migrator import detect_parquet_usage
+from skills.open_table_migrator import build_report, format_report
 
 matches = detect_parquet_usage(Path("."))
 report = build_report(matches)
@@ -147,12 +147,12 @@ The CLI runs the AST-based detector + a pre-pass (skip-marker comments and the p
 
 **Single-table:**
 ```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli <project_path> --table <TABLE_NAME> --namespace <NAMESPACE>
+PYTHONPATH=. python -m skills.open_table_migrator <project_path> --table <TABLE_NAME> --namespace <NAMESPACE>
 ```
 
 **Multi-table (mapping file):**
 ```bash
-PYTHONPATH=. python -m skills.open_table_migrator.cli <project_path> --mapping ./iceberg-mapping.json
+PYTHONPATH=. python -m skills.open_table_migrator <project_path> --mapping ./iceberg-mapping.json
 ```
 
 You can combine `--mapping` with `--table/--namespace` — the CLI treats the latter as a fallback for paths that don't match any glob. Paths that resolve to no target become worklist entries with `needs_manual_target: true`.
