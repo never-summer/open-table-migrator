@@ -1,4 +1,4 @@
-# 📘 Инструкция по работе с S2T в OpenFlow
+# 📘 Инструкция по работе с S2T
 
 ## Содержание
 1. [Что такое S2T](#что-такое-s2t)
@@ -12,7 +12,7 @@
 
 ## Что такое S2T
 
-**S2T (Spec to Test)** — это спецификация таблиц для OpenFlow-проектов.
+**S2T (Source to Target)** — это спецификация source-to-target маппинга таблиц для Hadoop/Spark datamart-проектов.
 
 ### Архитектура
 ```
@@ -37,7 +37,7 @@ Tests (Cucumber/Gherkin сценарии)
 
 ## Структура проекта
 
-### Базовая структура OpenFlow-проекта с S2T
+### Базовая структура datamart-проекта с S2T
 
 ```
 src/main/resources/
@@ -61,7 +61,7 @@ src/main/resources/
 
 ```json
 {
-  "datamart_name": "custom_blago_dzo_pb",
+  "datamart_name": "<project_name>",
   "s2t_confl_url": "",
   "distrib_files": [
     {
@@ -82,12 +82,6 @@ src/main/resources/
 # Варианты имен Excel-файлов:
 s2t.xlsx
 hadoop_S2T_<PROJECT>_v<version>.xlsx
-
-# Примеры из проектов:
-s2t.xlsx                                    # custom_blago_dzo_pb
-hadoop_S2T_SBSZH_v11.xlsx                   # custom_blago_dzo_sbszh
-hadoop_S2T_UFDM_SFN_v8.xlsx                 # custom_blago_dzo_sfn
-hadoop_S2T_UFDM_MISUC_v18.xlsx              # custom_blago_dzo_misuc
 ```
 
 ### Расположение файлов
@@ -135,8 +129,8 @@ hadoop_S2T_UFDM_MISUC_v18.xlsx              # custom_blago_dzo_misuc
 | `Функционал` | Название функционала | `S2T_hadoop` |
 | `Витрина` | Название витрины | `PFM Управление Расходами` |
 | `s2t` | Имя Excel-файла спецификации | `s2t.xlsx`, `hadoop_S2T_SBSZH_v11.xlsx` |
-| `ТУЗ` | Уникальный идентификатор (уникален в проекте) | `u_itdc_s_custom_blago_pl` |
-| `очередь ярн` | Oozie queue | `root.g_dc_y_custom_blago_pl` |
+| `ТУЗ` | Уникальный идентификатор (уникален в проекте) | `u_<unique_id>` |
+| `очередь ярн` | Oozie queue | `root.<queue_name>` |
 
 ---
 
@@ -227,13 +221,13 @@ hadoop_S2T_UFDM_MISUC_v18.xlsx              # custom_blago_dzo_misuc
 ```bash
 # Запуск проверки DDL
 mvn test \
-  -Ddatamart=custom_blago_dzo_pb \
+  -Ddatamart=<project_name> \
   -DrunTestsWithTags="SqlAttrCheck,SqlCheck" \
-  -pl openflow/openflow-datamarts/custom_blago_dzo_pb \
+  -pl <path>/<datamart-modules>/<project_name> \
   -am
 ```
 
-### Вариант 2: Через OpenFlow workflow
+### Вариант 2: Через Oozie workflow
 
 ```yaml
 # В wf/ctl/ctl.yml
@@ -330,17 +324,6 @@ grep -A 3 "s2t.xlsx" src/main/resources/devops/devops.json
 # Найти Gherkin-файлы
 find . -name "*.feature" 2>/dev/null
 ```
-
----
-
-## Структура проектов с S2T
-
-| Проект | S2T файл | Год |
-|--------|----------|-----|
-| custom_blago_dzo_pb | `s2t.xlsx` | 2025 |
-| custom_blago_dzo_sbszh | `hadoop_S2T_SBSZH_v11.xlsx` | 2025 |
-| custom_blago_dzo_sfn | `hadoop_S2T_UFDM_SFN_v8.xlsx` | 2025 |
-| custom_blago_dzo_misuc | `hadoop_S2T_UFDM_MISUC_v18.xlsx` | 2025 |
 
 ---
 

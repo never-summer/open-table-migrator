@@ -87,7 +87,7 @@ spark_submit_cmd_iceberg_service: >
           prior_value: "{{devops.datamart_path_app}}/<path>"
       - param:
           name: spark_submit_class_path
-          prior_value: "--class ru.sberbank.bigdata.cloud.arkp.etl.openflow.wf.<Class> {{hdfs_path_app_jar}}"
+          prior_value: "--class <your-org>.<package>.wf.<Class> {{hdfs_path_app_jar}}"
       - param:
           name: spark_driver_extraJavaOptions
           prior_value: >
@@ -291,7 +291,7 @@ CALL spark_catalog.system.remove_orphan_files(
           prior_value: "{{wf_<table_name>_service>>"
       - param:
           name: spark_submit_class_path
-          prior_value: "--class ru.sberbank.bigdata.cloud.arkp.etl.openflow.wf.RunSqlSP {{hdfs_path_app_jar}}"
+          prior_value: "--class <your-org>.<package>.wf.RunSqlSP {{hdfs_path_app_jar}}"
       - param:
           name: spark_driver_extraJavaOptions__hdfs_care_exp_snp_<table_name>
           prior_value: >
