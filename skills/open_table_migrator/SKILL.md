@@ -10,6 +10,35 @@ description: Convert Parquet/ORC read/write to Apache Iceberg in Python, Java, o
 > "Phase A: I will first do a read-only reconnaissance pass — read the mandatory guides, scan for I/O patterns AND pipeline anti-patterns (MERGE / `.changes` / MoR opportunities), and locate existing maintenance wf + iceberg conf YAML param."
 > "Phase B: I will then present a migration plan and STOP. I will not modify any file until you reply 'go' (or specify changes)."
 
+## 🚨 Hard rules — apply BEFORE the workflow gate
+
+These rules constrain *what your first tool calls are* and *what your first text output is*. They exist because past runs got "creative" — agent dispatched its own Explore-search, read DDLs in its own order, and went straight to printing "🔍 Анализ миграции" with its own ad-hoc table, skipping the workflow gate entirely. Violations of these rules invalidate the gate.
+
+### Rule 1 — First three tool calls are FIXED
+
+Your first three tool calls in this session **MUST** be, in this exact order:
+
+1. `Read /skills/open_table_migrator/S2T_GUIDE.md`
+2. `Read /skills/open_table_migrator/ICEBERG_WF_GUIDE.md`
+3. `Read /skills/open_table_migrator/reference.md`
+
+(Paths are relative to wherever this skill is installed — find the same directory as this `SKILL.md`.)
+
+Do NOT dispatch a sub-agent (Explore / Glob / Grep) before these three reads. Do NOT read DDL files, `pom.xml`, `ctl.yml`, or anything in the user's project before these three reads. If you have an Explore-style agent available, you may use it AFTER the three reads — not before.
+
+### Rule 2 — No narrative analysis before Phase B
+
+Until Phase B's structured plan block is printed verbatim (with the self-check at the top — see Phase B template), you **MUST NOT** emit any of:
+
+- Markdown headers like `## Анализ миграции`, `## Обзор таблиц`, `## Migration analysis`, `### Tables summary`
+- Markdown tables that summarize tables / files / fields you've read (those belong in Phase B)
+- Bulleted "what I found" lists (those belong in Phase B)
+- Statements like "Я проведу анализ" / "Let me analyze" / "I'll review the project"
+
+Plain status lines describing what tool you're about to run are fine. Anything that looks like a deliverable is NOT.
+
+If you catch yourself starting to emit a "🔍 Анализ" / "Обзор" / "Summary" block before the Phase B template, **stop immediately and start over from Phase A** — print the Phase B template instead.
+
 ## ⛔ Workflow gate — three mandatory phases, in order
 
 **You MUST execute these phases in order. Do NOT modify any file before Phase B is approved by the user.** This gate exists because past runs skipped the pipeline-analysis pass and went straight to mechanical Parquet→Iceberg rewrites, missing the MERGE / `.changes` opportunities the user is paying you to find.
@@ -69,8 +98,26 @@ Do all of these. Each is mandatory:
 
 After Phase A, output **one structured plan** to the user using the template below, then **stop and wait for explicit approval**. Do not start writing files.
 
+The plan **must** start with the Phase A self-check block — it forces you to declare what you actually did vs. skipped. If any item is `n`, you have NOT completed Phase A; do NOT proceed to the rest of the plan. Go back, complete the missing step, then re-emit Phase B.
+
 ```
 ## Phase A findings + proposed plan
+
+### Phase A self-check (REQUIRED — fill honestly)
+- [ ] Read S2T_GUIDE.md (first tool call)                                  y/n
+- [ ] Read ICEBERG_WF_GUIDE.md (second tool call)                          y/n
+- [ ] Read reference.md (third tool call)                                  y/n
+- [ ] Ran detector with --dry-run (paste 2-3 line excerpt of output)       y/n
+- [ ] Ran all 5 anti-pattern greps (paste each command + first line of     y/n
+      its output OR "no matches"; the 5 commands are: _inc.sql find,
+      FULL OUTER JOIN grep, EXCEPT/MINUS grep, tombstone grep, *_changelog find)
+- [ ] grep'ed for existing maintenance wf (paste command + result)         y/n
+- [ ] grep'ed for existing iceberg conf YAML param (paste command +        y/n
+      result)
+- [ ] Located S2T inputs (s2t.xlsx, devops.json, 1_ctl_entities.yml)       y/n
+
+**Any "n" above means Phase A is incomplete. Do NOT continue with the rest of
+this plan. Return to Phase A, complete the missing step, re-emit this block.**
 
 ### Tables to migrate (from worklist + S2T)
 | # | Source | Target Iceberg | Format | Code sites | DDL file | entity_id |
