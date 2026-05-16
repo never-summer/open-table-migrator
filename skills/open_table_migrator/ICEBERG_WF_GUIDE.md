@@ -87,7 +87,7 @@ spark_submit_cmd_iceberg_service: >
           prior_value: "{{devops.datamart_path_app}}/<path>"
       - param:
           name: spark_submit_class_path
-          prior_value: "--class ru.sberbank.bigdata.cloud.arkp.etl.openflow.wf.<Class> {{hdfs_path_app_jar}}"
+          prior_value: "--class <your-org>.<package>.wf.<Class> {{hdfs_path_app_jar}}"
       - param:
           name: spark_driver_extraJavaOptions
           prior_value: >
@@ -291,7 +291,7 @@ CALL spark_catalog.system.remove_orphan_files(
           prior_value: "{{wf_<table_name>_service>>"
       - param:
           name: spark_submit_class_path
-          prior_value: "--class ru.sberbank.bigdata.cloud.arkp.etl.openflow.wf.RunSqlSP {{hdfs_path_app_jar}}"
+          prior_value: "--class <your-org>.<package>.wf.RunSqlSP {{hdfs_path_app_jar}}"
       - param:
           name: spark_driver_extraJavaOptions__hdfs_care_exp_snp_<table_name>
           prior_value: >
@@ -352,7 +352,9 @@ CALL spark_catalog.system.expire_snapshots(
     older_than => timestamp'$safe_date');
 ```
 
-### Полный цикл обслуживания
+### Полный цикл обслуживания (для CoW-таблиц)
+Используй этот шаблон для таблиц **без** row-level UPDATE / DELETE / MERGE (Copy-on-Write по умолчанию).
+
 ```sql
 set USE_CUSTOM_UPDATE=false;
 set safe_date = (select cast(date_sub(current_date,${app.sql.safe_days}) as timestamp));
@@ -378,6 +380,49 @@ CALL spark_catalog.system.remove_orphan_files(
   table => '<schema>.<table_name>',
   older_than => timestamp '$safe_date');
 ```
+
+### Полный цикл обслуживания для MoR-таблиц
+
+**Обязательный шаблон** для таблиц с `write.delete.mode=merge-on-read` / `write.update.mode=merge-on-read` / `write.merge.mode=merge-on-read`. Без `delete-file-threshold` + `rewrite_position_delete_files` data-файлы с position-deletes не переписываются, scan'ы деградируют — это тихий регресс.
+
+Требования: Iceberg ≥ 1.4 для `rewrite_position_delete_files` + `rewrite_manifests`.
+
+```sql
+set USE_CUSTOM_UPDATE=false;
+set safe_date = (select cast(date_sub(current_date,${app.sql.safe_days}) as timestamp));
+
+-- Expire snapshots
+CALL spark_catalog.system.expire_snapshots(
+    table => '<schema>.<table_name>',
+    retain_last => ${app.sql.retain_snapshots},
+    older_than => timestamp'$safe_date');
+
+-- Rewrite data files with MoR-aware option: rewrite files that have >= 2 associated deletes
+CALL spark_catalog.system.rewrite_data_files(
+  table => '<schema>.<table_name>',
+  where => 'part_report_dt >= ${app.sql.service_date_from}',
+  strategy => 'sort',
+  sort_order => '<partition_column> asc nulls last',
+  options => map(
+    'target-file-size-bytes', '134217728',
+    'partial-progress.enabled', 'true',
+    'delete-file-threshold', '2'));
+
+-- Compact the position-delete files themselves
+CALL spark_catalog.system.rewrite_position_delete_files(
+  table => '<schema>.<table_name>',
+  options => map('rewrite-all', 'true'));
+
+-- Compact manifest list (speeds up scan planning)
+CALL spark_catalog.system.rewrite_manifests('<schema>.<table_name>');
+
+-- Remove orphan files
+CALL spark_catalog.system.remove_orphan_files(
+  table => '<schema>.<table_name>',
+  older_than => timestamp '$safe_date');
+```
+
+**Параметры для `delete-file-threshold`:** `2` — компромисс между частотой переписывания и накоплением deletes. На горячих таблицах с большим количеством UPDATE/DELETE — `1`. На редко-меняющихся MoR — `5`.
 
 ---
 
