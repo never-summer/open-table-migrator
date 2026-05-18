@@ -1,0 +1,77 @@
+[project]
+name = "open-table-migrator"
+version = "0.2.0"
+description = "Agent skill: migrate Python/Java/Scala projects from Parquet/ORC (incl. Hive) to Apache Iceberg — detects all I/O, generates per-call-site worklist + phased operational runbook, and updates build dependencies"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Maksim Radionov" },
+]
+keywords = [
+  "iceberg",
+  "parquet",
+  "orc",
+  "hive",
+  "migration",
+  "spark",
+  "skill",
+  "claude",
+  "qwen",
+  "agent",
+  "data-engineering",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: Apache Software License",
+  "Topic :: Database",
+  "Topic :: Software Development :: Code Generators",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "pyiceberg[sql-sqlite]>=0.7.0",
+  "pyarrow>=14.0.0",
+  "tree-sitter>=0.23",
+  "tree-sitter-python>=0.23",
+  "tree-sitter-java>=0.23",
+  "tree-sitter-scala>=0.23",
+  "sqlglot>=25.0.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0.0",
+  "pandas>=2.0.0",
+]
+
+[project.scripts]
+open-table-migrator = "open_table_migrator.scripts.cli:main"
+
+[project.urls]
+Repository = "https://github.com/never-summer/open-table-migrator"
+Issues = "https://github.com/never-summer/open-table-migrator/issues"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# Flat layout: pyproject.toml sits at the same level as the package source
+# (__init__.py, __main__.py, scripts/). Map the package name explicitly so
+# the installed distribution is `open_table_migrator`, not `skills.open_table_migrator`
+# — matching the standalone-skill use case (`pip install ./skills/open_table_migrator`).
+[tool.setuptools]
+package-dir = { open_table_migrator = "." }
+packages = [
+  "open_table_migrator",
+  "open_table_migrator.scripts",
+]
+include-package-data = true
+
+[tool.setuptools.package-data]
+# Skill markdown files MUST ship with the package — the agent reads them
+# (SKILL.md is required; S2T_GUIDE.md / ICEBERG_WF_GUIDE.md are mandatory
+# reads per SKILL.md hard-rule §1; examples.md / reference.md are linked
+# from SKILL.md; README.md is the user-facing entry point).
+open_table_migrator = ["*.md"]
